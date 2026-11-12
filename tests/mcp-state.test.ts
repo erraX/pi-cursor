@@ -409,8 +409,11 @@ describe("Cursor MCP discovery compatibility", () => {
         availableToolNamesFor(tools),
       ),
     );
+    // Replayed calls go through CallDynamicTool and carry the unique advertised name.
     registry.forEach((name, i) =>
-      expect(history).toContain(`"toolCallId":"${name}","toolName":"${advertised[i]}"`),
+      expect(history).toContain(
+        `"toolCallId":"${name}","toolName":"CallDynamicTool","args":{"namespace":"pi","toolName":"${advertised[i]}"`,
+      ),
     );
   });
 

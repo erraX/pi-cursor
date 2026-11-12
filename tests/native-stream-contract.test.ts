@@ -414,7 +414,19 @@ function expectReferencedBlobsServed(bridge: FakeBridge, run: AgentRunRequest): 
 
 interface PromptMessage {
   role: string;
-  content: string | Array<{ type: string; text?: string; toolName?: string }>;
+  content:
+    | string
+    | Array<{ type: string; text?: string; toolName?: string; args?: { toolName?: string } }>;
+}
+
+/** A tool call reads as the meta tool and the Pi tool it invoked: `CallDynamicTool:mcp_pi_read`. */
+function promptPartText(part: {
+  text?: string;
+  toolName?: string;
+  args?: { toolName?: string };
+}): string {
+  if (part.text !== undefined) return part.text;
+  return [part.toolName, part.args?.toolName].filter(Boolean).join(":");
 }
 
 /**
@@ -436,7 +448,7 @@ function modelConversation(
         text:
           typeof message.content === "string"
             ? message.content
-            : message.content.map((part) => part.text ?? part.toolName ?? "").join(""),
+            : message.content.map(promptPartText).join(""),
       })),
     { role: "user", text: userText(run) ?? "" },
   ];
@@ -759,7 +771,7 @@ describe("native stream contract: tool continuation after the bridge is lost", (
       "the model sees the turn that called the tool before the recovered tool output",
     ).toEqual([
       { role: "user", text: expect.stringContaining(PROMPT) },
-      { role: "assistant", text: "mcp_pi_read" },
+      { role: "assistant", text: "CallDynamicTool:mcp_pi_read" },
       { role: "user", text },
     ]);
     expect(run.conversationState?.turns, "the interrupted turn is state").toHaveLength(1);
@@ -876,7 +888,7 @@ describe("native stream contract: tool continuation after the bridge is lost", (
       expect(userText(continued)).toBe(CHECKPOINT_CONTINUATION_PROMPT);
       expect(modelConversation(third, continued).slice(-5)).toEqual([
         { role: "user", text: expect.stringContaining(PROMPT) },
-        { role: "assistant", text: "mcp_pi_read" },
+        { role: "assistant", text: "CallDynamicTool:mcp_pi_read" },
         { role: "user", text: expect.stringContaining(README) },
         { role: "assistant", text: "Partial answer" },
         { role: "user", text: CHECKPOINT_CONTINUATION_PROMPT },

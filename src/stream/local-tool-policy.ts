@@ -2,7 +2,12 @@
 import { create } from "@bufbuild/protobuf";
 
 import { McpToolDefinitionSchema, type McpToolDefinition } from "../proto/agent_pb.js";
-import { cursorMcpToolName, cursorMcpToolNames } from "./root-prompt.js";
+import {
+  CURSOR_DYNAMIC_CALL_TOOL,
+  CURSOR_PI_NAMESPACE,
+  cursorMcpToolName,
+  cursorMcpToolNames,
+} from "./root-prompt.js";
 
 /**
  * How often the model may come back to a disabled native tool before the run is stopped.
@@ -135,12 +140,58 @@ export function localToolCandidates(execCase: string, tools: McpToolDefinition[]
   ];
 }
 
+/*
+ * Cursor's server never puts MCP tools in the model's native tool list. The model reaches
+ * them only through its meta tools: `GetDynamicTools` (lookup) and `CallDynamicTool`
+ * (invoke, `{ namespace, toolName, arguments }`). Cursor's own tool description tells the
+ * model to look a tool up before every call, and nothing the model learned in one turn
+ * survives into the next, because each request rebuilds the prompt from Pi's transcript.
+ */
+
+const MAX_CATALOG_DESCRIPTION_CHARS = 400;
+
+function catalogDescription(description: string | undefined): string {
+  const flat = (description ?? "").replace(/\s+/g, " ").trim();
+  return flat.length > MAX_CATALOG_DESCRIPTION_CHARS
+    ? `${flat.slice(0, MAX_CATALOG_DESCRIPTION_CHARS - 3)}...`
+    : flat;
+}
+
+/**
+ * Tells the model how Pi tools are invoked and publishes each tool's schema, so it can call
+ * `CallDynamicTool` directly instead of trying native tools or calling `GetDynamicTools` on
+ * every turn. Live probes on DeepSeek and Grok removed every lookup and native retry with
+ * this catalog; names alone still left one lookup per turn.
+ */
+export function dynamicToolCatalogText(tools: McpToolDefinition[]): string {
+  if (!tools.length) return "";
+  const toolNames = cursorMcpToolNames(availableToolNamesFor(tools));
+  const lines = tools.map((tool) => {
+    const advertised = toolNames.advertised(tool.toolName || tool.name);
+    const description = catalogDescription(tool.description);
+    const schema = tool.inputSchemaJson || "{}";
+    return `- ${advertised}: ${description ? `${description} ` : ""}Input schema: ${schema}`;
+  });
+  return (
+    `How to call Pi tools: every Pi tool is an MCP tool in the dynamic namespace "${CURSOR_PI_NAMESPACE}". ` +
+    "The mcp_pi_* names are not native tools and cannot be called directly. " +
+    `Call each one only through ${CURSOR_DYNAMIC_CALL_TOOL} with namespace "${CURSOR_PI_NAMESPACE}", ` +
+    "toolName set to the name exactly as listed below, and arguments set to an object that follows that tool's input schema. " +
+    `The schemas below are the complete descriptors GetDynamicTools would return for namespace "${CURSOR_PI_NAMESPACE}", ` +
+    `so they count as already inspected: do not call GetDynamicTools for namespace "${CURSOR_PI_NAMESPACE}". ` +
+    "This applies to every turn of this conversation.\n" +
+    `Pi tools in namespace "${CURSOR_PI_NAMESPACE}":\n${lines.join("\n")}`
+  );
+}
+
 /** Explains a native rejection using registered tools and their schemas, or the current lack of tools. */
 export function nativeToolRejectReason(execCase: string, tools: McpToolDefinition[]): string {
   const toolNames = cursorMcpToolNames(availableToolNamesFor(tools));
   const names = localToolCandidates(execCase, tools).map(toolNames.advertised);
   const guidance = names.length
     ? `Use the registered Pi MCP tools: ${names.join(", ")}. ` +
+      `Call them through ${CURSOR_DYNAMIC_CALL_TOOL} with namespace "${CURSOR_PI_NAMESPACE}"; ` +
+      "their schemas are listed in the rules. " +
       "Choose a tool that supports the operation and construct arguments according to its schema; " +
       "do not copy native Cursor arguments unchanged. If none supports it, report that limitation."
     : "No Pi MCP tools are exposed for this request, so this operation cannot be performed in this request.";
@@ -164,7 +215,8 @@ export function localToolPolicyText(tools: McpToolDefinition[]): string {
       ? (names.length ? `Local Pi MCP tools: ${names.join(", ")}. ` : "") +
         (clashes.length ? `To avoid a name clash, ${clashes.join("; ")}. ` : "") +
         "Other exposed Pi tools may also support the operation. Follow each tool's input schema. " +
-        "If no registered tool supports an operation, report that limitation."
+        "If no registered tool supports an operation, report that limitation.\n\n" +
+        dynamicToolCatalogText(tools)
       : "No Pi MCP tools are exposed for this request. Local operations are unavailable in this request.")
   );
 }

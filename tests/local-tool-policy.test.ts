@@ -153,6 +153,49 @@ describe("Pi-only local tool routing", () => {
     expect(nativeToolRejectReason(execCase, tools(...available))).toContain(expected);
   });
 
+  it("publishes every Pi tool with its schema behind CallDynamicTool on the pi namespace", () => {
+    const registered = buildMcpToolDefinitions([
+      {
+        type: "function",
+        function: {
+          name: "bash",
+          description: "Execute a bash command",
+          parameters: {
+            type: "object",
+            properties: { command: { type: "string" } },
+            required: ["command"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "web_search",
+          description: "x".repeat(1000),
+          parameters: { type: "object" },
+        },
+      },
+    ]);
+    const policy = localToolPolicyText(registered);
+    expect(policy).toContain('CallDynamicTool with namespace "pi"');
+    expect(policy).toContain('do not call GetDynamicTools for namespace "pi"');
+    expect(policy).toContain("The mcp_pi_* names are not native tools");
+    expect(policy).toContain(
+      '- mcp_pi_bash: Execute a bash command Input schema: {"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}',
+    );
+    // Every exposed tool is listed, not only local-operation ones, with long descriptions capped.
+    const searchLine = policy.split("\n").find((line) => line.startsWith("- mcp_pi_web_search: "));
+    expect(searchLine).toMatch(/^- mcp_pi_web_search: x+(\.\.\.)? Input schema: /);
+    expect(searchLine!.length).toBeLessThan(450);
+    expect(localToolPolicyText([])).not.toContain("CallDynamicTool");
+  });
+
+  it("points native rejections at CallDynamicTool", () => {
+    expect(nativeToolRejectReason("shellArgs", tools("bash"))).toContain(
+      'Call them through CallDynamicTool with namespace "pi"',
+    );
+  });
+
   it("scopes missing tools to the current request, including tool-free greetings", () => {
     const policy = localToolPolicyText([]);
     expect(policy).toContain("No Pi MCP tools are exposed for this request");
@@ -160,10 +203,11 @@ describe("Pi-only local tool routing", () => {
     expect(policy).not.toContain("No Pi MCP tools are registered");
   });
 
-  it("keeps the prompt compact without hiding custom tools behind a no-tools claim", () => {
+  it("keeps the local tool line compact without hiding custom tools behind a no-tools claim", () => {
     const policy = localToolPolicyText(tools("bash", "web_search", "search_repository"));
-    expect(policy).toContain("mcp_pi_bash");
-    expect(policy).not.toContain("mcp_pi_web_search");
+    const localLine = policy.match(/Local Pi MCP tools: [^.]*\./)?.[0] ?? "";
+    expect(localLine).toContain("mcp_pi_bash");
+    expect(localLine).not.toContain("mcp_pi_web_search");
     expect(policy).toContain("Other exposed Pi tools");
     expect(localToolPolicyText(tools("search_repository"))).not.toContain("No Pi MCP tools");
   });
