@@ -32,6 +32,11 @@ import type { ParsedTurn, ParsedTurnStep, ParsedToolCallStep } from "./types.js"
 /** Provider identifier used when registering Pi's tools as Cursor MCP tools. */
 const MCP_PROVIDER_IDENTIFIER = "pi";
 
+/** Cursor's meta tool that invokes MCP tools; Pi tools are never in the native tool list. */
+export const CURSOR_DYNAMIC_CALL_TOOL = "CallDynamicTool";
+/** The dynamic namespace holding Pi's MCP tools (the `pi` server in mcpStateServersFor). */
+export const CURSOR_PI_NAMESPACE = MCP_PROVIDER_IDENTIFIER;
+
 /**
  * Replayed tool results are already bounded by `normalizeToolResultForTransport`
  * on the turn-structure path. Bound them again here so a long history cannot
@@ -207,12 +212,19 @@ export function turnRootMessages(
       continue;
     }
     if (!isToolCallStep(step)) continue;
-    const toolName = toolNames.advertised(step.toolName);
+    // Replay the call in the form the model actually made: CallDynamicTool on the `pi`
+    // namespace. A direct `mcp_pi_<tool>` call in history teaches the model to call a tool
+    // that is not in its native list, which Cursor rejects as unavailable.
+    const toolName = CURSOR_DYNAMIC_CALL_TOOL;
     assistantContent.push({
       type: "tool-call",
       toolCallId: step.toolCallId,
       toolName,
-      args: step.arguments,
+      args: {
+        namespace: CURSOR_PI_NAMESPACE,
+        toolName: toolNames.advertised(step.toolName),
+        arguments: step.arguments,
+      },
     });
     if (step.result) {
       const imageSuffix = step.result.images?.length

@@ -74,6 +74,20 @@ describe("root prompt messages", () => {
     expect(serialized).toContain("nothing relevant");
   });
 
+  it("replays tool calls as CallDynamicTool on the pi namespace, never as direct mcp_pi_* calls", () => {
+    const messages = turnRootMessages(historyTurn, ["read_file"]);
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    const call = assistant.content.find((part) => part.type === "tool-call");
+    expect(call).toEqual({
+      type: "tool-call",
+      toolCallId: "call_1",
+      toolName: "CallDynamicTool",
+      args: { namespace: "pi", toolName: "mcp_pi_read_file", arguments: { path: "notes.md" } },
+    });
+    const tool = messages.find((m) => m.role === "tool")!;
+    expect(tool.content[0]).toMatchObject({ toolCallId: "call_1", toolName: "CallDynamicTool" });
+  });
+
   it("namespaces MCP tool names once", () => {
     expect(cursorMcpToolName("grep")).toBe("mcp_pi_grep");
     expect(cursorMcpToolName("mcp_pi_grep")).toBe("mcp_pi_grep");
