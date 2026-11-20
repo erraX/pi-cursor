@@ -21,6 +21,7 @@ import {
   ConversationStateStructureSchema,
   ExecClientControlMessageSchema,
   ExecClientMessageSchema,
+  ExecClientStreamCloseSchema,
   ExecClientThrowSchema,
   GetBlobResultSchema,
   KvClientMessageSchema,
@@ -737,6 +738,9 @@ function handleExecMessageInner(
       `(wire drift: this build's agent.proto is behind Cursor). ${REJECT_REASON}`,
     sendFrame,
   );
+  // Cursor's own executor follows the throw for a frame no handler claims with a streamClose
+  // (agent-exec: `No handler found for server message of type ...`), which ends the exec.
+  sendExecStreamClose(execMsg, sendFrame);
   return false;
 }
 
@@ -768,6 +772,23 @@ function sendExecThrow(
     message: {
       case: "throw",
       value: create(ExecClientThrowSchema, { id: (execMsg as any).id, error }),
+    },
+  });
+  const clientMessage = create(AgentClientMessageSchema, {
+    message: { case: "execClientControlMessage", value: control },
+  });
+  sendFrame(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
+}
+
+/** Ends the client side of one exec, keyed by exec id like `ExecClientThrow`. */
+function sendExecStreamClose(
+  execMsg: ExecServerMessage,
+  sendFrame: (data: Uint8Array) => void,
+): void {
+  const control = create(ExecClientControlMessageSchema, {
+    message: {
+      case: "streamClose",
+      value: create(ExecClientStreamCloseSchema, { id: (execMsg as any).id }),
     },
   });
   const clientMessage = create(AgentClientMessageSchema, {
