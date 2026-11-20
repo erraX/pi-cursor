@@ -166,6 +166,8 @@ export function interactionUpdateProgress(
   // parseable cases, not schema drift (see agent.proto StepStartedUpdate /
   // StepCompletedUpdate).
   if (updateCase === "stepStarted" || updateCase === "stepCompleted") return "work";
+  // Arrives with a step's tool calls, so it only flows while the model is acting.
+  if (updateCase === "toolRequestsListed") return "work";
   return "none";
 }
 

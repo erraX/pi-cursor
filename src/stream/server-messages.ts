@@ -169,6 +169,9 @@ export function processServerMessage(
     // classified by interactionUpdateProgress; reuse it rather than keeping a second list.
     const progress = interactionUpdateProgress(updateCase);
     if (progress !== "none") return progress;
+    // A request for Cursor's own feedback form. Pi has no such form, and nothing waits on it:
+    // a known case that is neither progress nor drift.
+    if (updateCase === "feedbackRequest") return "none";
     // Unrecognized update cases are informational rather than stranding — the
     // stream keeps flowing — but they are the first sign our schema is behind.
     recordDriftSignal("interaction_update", updateCase);
