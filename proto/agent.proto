@@ -3227,6 +3227,16 @@ message FeedbackRequestUpdate {
   optional string comment_placeholder = 8;
 }
 
+// aiserver.v1.BidiService/BidiAppend, as in the Cursor CLI 2026.10.22 schema: one client message
+// of a RunSSE stream, sent over HTTP/1.1 as a unary call. `append_seqno` orders the messages of
+// one request id, starting at 0.
+message BidiAppendRequest {
+  string data = 1;
+  BidiRequestId request_id = 2;
+  int64 append_seqno = 3;
+  bytes data_binary = 4;
+}
+
 enum AppliedAgentChange_ChangeType {
   CHANGE_TYPE_UNSPECIFIED = 0;
   CHANGE_TYPE_CREATED = 1;

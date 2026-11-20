@@ -24,7 +24,7 @@ export function resolveCursorProxyUrl(): URL | undefined {
 export async function connectProxiedSocket(
   proxyUrl: URL,
   targetOrigin: string,
-  options?: { signal?: AbortSignal; timeoutMs?: number },
+  options?: { signal?: AbortSignal; timeoutMs?: number; alpnProtocols?: string[] },
 ): Promise<tls.TLSSocket> {
   if (options?.signal?.aborted) {
     throw new Error("Proxy tunnel aborted");
@@ -102,7 +102,7 @@ export async function connectProxiedSocket(
       tunnel = tls.connect({
         socket: rawSocket,
         servername: targetHost,
-        ALPNProtocols: ["h2"],
+        ALPNProtocols: options?.alpnProtocols ?? ["h2"],
       });
       tunnel.once("secureConnect", () => succeed(tunnel!));
       tunnel.once("error", fail);
