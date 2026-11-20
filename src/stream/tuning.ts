@@ -23,7 +23,7 @@ export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 180_000;
 // A stream parked on an exec we could not answer is not slow, it is finished: Cursor
 // waits for a reply that will never arrive while its heartbeats keep the connection
 // alive. Liveness stops counting as progress once that happens (see StreamProgress),
-// and this shorter deadline gives the generic ExecClientThrow answer time to unpark
+// and this shorter deadline gives the generic ExecClientThrow + streamClose answer time to unpark
 // the run before the turn is failed.
 export const DEFAULT_STREAM_PARK_TIMEOUT_MS = 45_000;
 

@@ -504,7 +504,8 @@ describe("completed-turn connection close", () => {
         ),
       ),
     );
-    expect(written).toHaveLength(1);
+    // The throw and the streamClose that ends the exec.
+    expect(written).toHaveLength(2);
 
     // Cursor keeps the connection warm while it waits. Before the park was modelled,
     // these reset the silence watchdog and the turn hung until the operator noticed.
