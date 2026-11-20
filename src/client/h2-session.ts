@@ -77,8 +77,10 @@ function buildRequestHeaders(
   rpcPath: string,
   unary: boolean,
   token: string,
+  extraHeaders: Record<string, string> = {},
 ): http2.OutgoingHttpHeaders {
   return {
+    ...extraHeaders,
     ":method": "POST",
     ":path": rpcPath,
     "content-type": unary ? "application/proto" : "application/connect+proto",
@@ -349,7 +351,7 @@ export function createBridgeHandleForSession(
       return;
     }
     const stream = session.request(
-      buildRequestHeaders(rpcPath, unary, accessToken),
+      buildRequestHeaders(rpcPath, unary, accessToken, options.headers),
     ) as unknown as H2Stream;
     attachStream(stream);
   };

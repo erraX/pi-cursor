@@ -20,6 +20,8 @@ export interface SpawnBridgeOptions {
   connectTimeoutMs?: number;
   /** Activity idle kill after first I/O (ms). Default 15m. */
   idleTimeoutMs?: number;
+  /** Extra request headers for every stream the bridge opens, persistent reopens included. */
+  headers?: Record<string, string>;
 }
 
 /** Minimal shape a `BridgeHandle` needs for forceful teardown — no longer literally a child

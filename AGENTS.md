@@ -136,6 +136,11 @@ src/
   `cursorMcpToolNames()` owns the `mcp_pi_<tool>` mapping for every catalog,
   prompt and dispatch path, so a custom tool whose name clashes under the prefix (`mcp_pi_bash`
   next to `bash`) gets one unique name everywhere instead of shadowing another tool.
+- Every `Run` stream sends `x-cursor-agent-allowed-tools` (`cursorRunHeaders()` in
+  `src/stream/local-tool-policy.ts`), so the model's built-in toolset holds only what Pi can
+  serve: `CallDynamicTool` / `GetDynamicTools`, fetch and web search. Cursor's local tools
+  (Shell, Read, Grep, Glob, StrReplace, Write) never reach the model. Use the allowlist:
+  `x-cursor-agent-exclude-tools` is ignored on this client's runs (verified live).
 - All of this lives in `src/stream/root-prompt.ts`. Every request overlays a fresh prompt from
   Pi's transcript onto `root_prompt_messages_json`, even when a checkpoint exists — checkpoints
   keep Cursor's state (todos, file state) but their historical user entries are often empty.
@@ -178,3 +183,4 @@ src/
 | `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS`             | Stream silence watchdog in ms (default: `180000` / 3 min; `0` disables). Heartbeats do not reset it while an exec is unanswered; that path uses a 45s park deadline. |
 | `PI_CURSOR_H2_IDLE_TIMEOUT_MS`                 | HTTP/2 bridge activity idle timeout in ms (default: `0` / disabled)                                                                                                  |
 | `PI_CURSOR_PROMPT_HISTORY`                     | Set to `0` or `false` to stop publishing system prompt + history as prompt messages                                                                                  |
+| `PI_CURSOR_NATIVE_TOOLS`                       | Set to `1` to stop limiting a run's built-in tools (`x-cursor-agent-allowed-tools`); Cursor's local tools are then offered and rejected on use                       |
