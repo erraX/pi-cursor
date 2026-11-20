@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
+    setupFiles: ["tests/setup/isolate-cache-dir.ts"],
     testTimeout: 15_000,
     coverage: {
       provider: "v8",
