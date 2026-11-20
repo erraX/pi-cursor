@@ -278,6 +278,8 @@ export interface StreamIdleRetryController {
   currentAttempt: number;
   maxRetries: number;
   recoverBeforeRetry?: boolean;
+  /** Idle recoveries taken in a row since the model last produced output. */
+  idleRecoveries?: number;
   restart(nextAttempt: number, context: IdleRestartContext): boolean;
 }
 
