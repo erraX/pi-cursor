@@ -11,10 +11,11 @@ import type {
 import type { CursorModel } from "../stream/model-discovery.js";
 import {
   clampCursorContextWindow,
+  DEFAULT_CONTEXT_WINDOW,
   inferCursorContextWindow,
   inferCursorMaxOutputTokens,
 } from "./limits.js";
-import { supportsReasoningModelId } from "./processing.js";
+import { parseModelId, supportsReasoningModelId } from "./processing.js";
 
 export const GPT55_VARIANTS = [
   {
@@ -114,12 +115,26 @@ export function cursorEffortLabel(value: string): string {
   );
 }
 
+/**
+ * The parameter ids Cursor uses for a model's selectable effort. `reasoning_effort` is the one
+ * on DeepSeek V4.1 Flash and on Grok 4.7 since it gained a `context` parameter. While it went
+ * unrecognized, each effort became its own group under one shared row id, so the last variant
+ * listed won: those rows had no thinking control and always asked for `max` / `xhigh`.
+ */
+export type EffortParameterId = "reasoning" | "effort" | "reasoning_effort";
+
+const EFFORT_PARAMETER_IDS: readonly EffortParameterId[] = [
+  "reasoning",
+  "effort",
+  "reasoning_effort",
+];
+
 export function metadataEffortParameterId(
   variant: CursorParameterizedVariant,
-): "reasoning" | "effort" | undefined {
-  if (variant.parameters.some((parameter) => parameter.id === "reasoning")) return "reasoning";
-  if (variant.parameters.some((parameter) => parameter.id === "effort")) return "effort";
-  return undefined;
+): EffortParameterId | undefined {
+  return EFFORT_PARAMETER_IDS.find((id) =>
+    variant.parameters.some((parameter) => parameter.id === id),
+  );
 }
 
 export function isDefaultContext(context: string | undefined): boolean {
@@ -227,7 +242,7 @@ export function buildParameterizedRowsFromGroup(options: {
   model: CursorParameterizedModel;
   variants: CursorParameterizedVariant[];
   requestedMaxMode: boolean;
-  effortParameterId?: "reasoning" | "effort";
+  effortParameterId?: EffortParameterId;
 }): CursorModel[] {
   const first = options.variants[0];
   if (!first) return [];
@@ -236,7 +251,12 @@ export function buildParameterizedRowsFromGroup(options: {
   const context = parameterValue(first.parameters, "context");
   const fast = parameterValue(first.parameters, "fast") === "true";
   const thinking = parameterValue(first.parameters, "thinking") === "true";
-  const hasEffortParameter = Boolean(options.effortParameterId);
+  // Decides only how a Max Mode row is named: `-max` beside an effort, `-max-mode` without one.
+  // `reasoning_effort` models keep `-max-mode`. Their Max Mode rows carried that suffix while the
+  // parameter went unrecognized, so saved model ids stay valid, and DeepSeek has an effort that
+  // is itself called `max`.
+  const hasEffortParameter =
+    options.effortParameterId !== undefined && options.effortParameterId !== "reasoning_effort";
   const baseId = parameterizedBaseId(
     options.model.name,
     first,
@@ -329,7 +349,7 @@ export function modelsFromParameterizedMetadata(
   for (const model of parameterizedModels) {
     const groups = new Map<
       string,
-      { effortParameterId?: "reasoning" | "effort"; variants: CursorParameterizedVariant[] }
+      { effortParameterId?: EffortParameterId; variants: CursorParameterizedVariant[] }
     >();
     for (const variant of model.variants) {
       if (variant.parameters.length === 0) continue;
@@ -381,34 +401,26 @@ export function augmentCursorModels(
   parameterizedModels: CursorParameterizedModel[] = [],
 ): CursorModel[] {
   const byId = new Map<string, CursorModel>();
-  const imageSupportByModelId = new Map(
-    parameterizedModels
-      .filter((model) => typeof model.supportsImages === "boolean")
-      .map((model) => [model.name, model.supportsImages!]),
-  );
-  for (const model of raw.map(normalizeDisplayModel)) {
-    const lookupId = model.requestedModelId ?? model.id;
-    const metadataSupportsImages = imageSupportByModelId.get(lookupId);
-    byId.set(model.id, {
-      ...model,
-      ...(model.supportsImages === undefined && metadataSupportsImages !== undefined
-        ? { supportsImages: metadataSupportsImages }
-        : {}),
-    });
-  }
+  for (const model of raw.map(normalizeDisplayModel)) byId.set(model.id, model);
 
   const metadataRows =
     modelsFromParameterizedMetadata(parameterizedModels).map(normalizeDisplayModel);
+  const metadataRowIds = new Set<string>();
   for (const model of metadataRows) {
     byId.set(model.id, model);
+    metadataRowIds.add(model.id);
     // The raw catalog has no max-mode rows for this family. Keep the
     // cursor-prefixed picker twins aligned with the metadata-derived rows.
     if (/^grok-4\.7-max(?:-|$)/.test(model.id)) {
       const aliasId = `cursor-${model.id}`;
-      if (!byId.has(aliasId)) byId.set(aliasId, { ...model, id: aliasId });
+      if (!byId.has(aliasId)) {
+        byId.set(aliasId, { ...model, id: aliasId });
+        metadataRowIds.add(aliasId);
+      }
     }
   }
   overlayParameterizedContextWindows(byId, metadataRows);
+  overlayParameterizedModelFacts(byId, parameterizedModels, metadataRowIds);
 
   // Fallback for static/offline discovery. Cursor exposes GPT-5.5 context as
   // parameters (272K vs 1M), not distinct backend model IDs.
@@ -435,6 +447,63 @@ function overlayParameterizedContextWindows(
     const existing = byId.get(`cursor-${row.id}`);
     if (!existing || existing.contextWindow === row.contextWindow) continue;
     byId.set(`cursor-${row.id}`, { ...existing, contextWindow: row.contextWindow });
+  }
+}
+
+/**
+ * The AvailableModels entry a GetUsableModels row belongs to. Raw ids carry an effort and
+ * sometimes a `cursor-` prefix (`grok-4.7-high-fast`, `cursor-grok-4.6-low`) around the server
+ * model name the metadata is filed under. An exact name wins, so a model whose own name ends in
+ * something effort-like (`gpt-5.1-codex-max`) is not mistaken for its shorter sibling.
+ */
+function parameterizedModelFor(
+  row: CursorModel,
+  byName: Map<string, CursorParameterizedModel>,
+): CursorParameterizedModel | undefined {
+  const unprefixed = row.id.replace(/^cursor-/, "");
+  const candidates = [row.requestedModelId, row.id, unprefixed, parseModelId(unprefixed).base];
+  for (const name of candidates) {
+    const model = name ? byName.get(name) : undefined;
+    if (model) return model;
+  }
+  return undefined;
+}
+
+/**
+ * GetUsableModels says nothing about a model's context window or image support, so its rows
+ * carry the 200K default and count as image-capable. AvailableModels knows both. Rows built from
+ * that metadata already have them; this gives them to the raw rows that survive beside those,
+ * which is how `grok-4.7` stayed at 200K (Cursor: 256K) and `kimi-k2.7-code` at 200K (262K).
+ *
+ * Only a window still at the inferred default is replaced. One read from the row's own id or
+ * name (`-1m`, "256K") is specific to that row and stays.
+ */
+function overlayParameterizedModelFacts(
+  byId: Map<string, CursorModel>,
+  parameterizedModels: CursorParameterizedModel[],
+  metadataRowIds: Set<string>,
+): void {
+  if (parameterizedModels.length === 0) return;
+  const byName = new Map(parameterizedModels.map((model) => [model.name, model]));
+  for (const [id, row] of byId) {
+    if (metadataRowIds.has(id)) continue;
+    const metadata = parameterizedModelFor(row, byName);
+    if (!metadata) continue;
+    const limit = metadata.contextTokenLimit;
+    const contextWindow =
+      row.contextWindow === DEFAULT_CONTEXT_WINDOW && typeof limit === "number" && limit > 0
+        ? clampCursorContextWindow(row.id, row.name, limit)
+        : row.contextWindow;
+    const supportsImages =
+      row.supportsImages === undefined && typeof metadata.supportsImages === "boolean"
+        ? metadata.supportsImages
+        : row.supportsImages;
+    if (contextWindow === row.contextWindow && supportsImages === row.supportsImages) continue;
+    byId.set(id, {
+      ...row,
+      contextWindow,
+      ...(supportsImages === undefined ? {} : { supportsImages }),
+    });
   }
 }
 
