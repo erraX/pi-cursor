@@ -236,6 +236,27 @@ export interface StreamState {
   previousContextTokens?: number;
   /** Set once Cursor reported `turnEnded`; a connection close after it is a completed turn. */
   turnEnded: boolean;
+  /** The counters `turnEnded` carried, when it carried any. They cover the whole run. */
+  turnEndedUsage?: CursorRunUsage;
+  /**
+   * What Pi was billed for earlier messages of this Cursor run. One object per run: a stream
+   * resumed on the parked bridge shares it, a new run starts a new one.
+   */
+  runUsage?: CursorRunUsage;
+}
+
+/**
+ * Token counts in Pi's buckets. `input` is fresh input, net of cache reads and writes.
+ *
+ * Cursor reports a run's counters once, on `turnEnded`, summed over every model step. A run
+ * paused for Pi tools spans several assistant messages, so the message that ends it is billed
+ * the counters minus what the earlier ones were billed (see `applyCursorUsage`).
+ */
+export interface CursorRunUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
 }
 
 // ── Native streamSimple runtime ──
