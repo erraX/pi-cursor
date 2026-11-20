@@ -7,7 +7,7 @@
  * bridge suffix after any earlier recovery is unrecoverable — the wire turn is
  * only a suffix of Pi's turn, so exact tool-id matching could never succeed again.
  */
-import type { ClientTranscript, ParsedTurn } from "./types.js";
+import type { ClientTranscript, ParsedTurn, ToolResultInfo } from "./types.js";
 
 export type { ClientTranscript } from "./types.js";
 
@@ -23,16 +23,44 @@ export function recoveredTranscript(
 }
 
 /**
+ * Pi's in-flight turn as its next request will replay it: the tool calls it made, each with the
+ * result Pi sent back. Pi's parsed in-flight turn has the results stripped and listed beside it.
+ */
+export function withToolResults(turn: ParsedTurn, toolResults: ToolResultInfo[]): ParsedTurn {
+  const byId = new Map(toolResults.map((result) => [result.toolCallId, result]));
+  return {
+    ...turn,
+    steps: turn.steps.map((step) => {
+      if (step.kind !== "toolCall" || step.result) return step;
+      const result = byId.get(step.toolCallId);
+      if (!result) return step;
+      return {
+        ...step,
+        result: {
+          content: result.content,
+          isError: result.isError === true,
+          ...(result.images?.length ? { images: result.images } : {}),
+        },
+      };
+    }),
+  };
+}
+
+/**
  * The turn Pi will report as completed once this stream finishes.
  * After recovery the wire current turn is synthetic; Pi's in-flight turn is the
  * recorded one extended by whatever steps the synthetic turn produced.
+ *
+ * A checkpoint is committed against this turn, not the wire one. Pi's next request is compared
+ * with what the checkpoint was recorded for, and Pi never saw the synthetic turn: its user text
+ * is recovered tool output, and its images are the tool results' images, not the question's.
  */
 export function clientInFlightTurn(
   transcript: ClientTranscript,
   wireCurrentTurn: ParsedTurn,
 ): ParsedTurn {
   if (transcript.kind === "live") return wireCurrentTurn;
-  const userImages = transcript.inFlightTurn.userImages ?? wireCurrentTurn.userImages;
+  const userImages = transcript.inFlightTurn.userImages;
   const recovered: ParsedTurn = {
     userText: transcript.inFlightTurn.userText,
     steps: [...transcript.inFlightTurn.steps, ...wireCurrentTurn.steps],
