@@ -25,7 +25,9 @@ import {
   InteractionUpdateSchema,
   KvServerMessageSchema,
   McpArgsSchema,
+  ConversationTokenDetailsSchema,
   TextDeltaUpdateSchema,
+  TokenDeltaUpdateSchema,
   TurnEndedUpdateSchema,
   type AgentClientMessage,
   type AgentRunRequest,
@@ -106,10 +108,29 @@ const cursor = {
       message: { case: "textDelta", value: create(TextDeltaUpdateSchema, { text }) },
     }),
   }),
-  turnEnded: (): ServerMessage => ({
+  turnEnded: (
+    counters: Partial<{
+      inputTokens: bigint;
+      outputTokens: bigint;
+      cacheReadTokens: bigint;
+      cacheWriteTokens: bigint;
+    }> = {},
+  ): ServerMessage => ({
     case: "interactionUpdate",
     value: create(InteractionUpdateSchema, {
-      message: { case: "turnEnded", value: create(TurnEndedUpdateSchema, {}) },
+      message: { case: "turnEnded", value: create(TurnEndedUpdateSchema, counters) },
+    }),
+  }),
+  tokens: (tokens: number): ServerMessage => ({
+    case: "interactionUpdate",
+    value: create(InteractionUpdateSchema, {
+      message: { case: "tokenDelta", value: create(TokenDeltaUpdateSchema, { tokens }) },
+    }),
+  }),
+  contextSize: (usedTokens: number): ServerMessage => ({
+    case: "conversationCheckpointUpdate",
+    value: create(ConversationStateStructureSchema, {
+      tokenDetails: create(ConversationTokenDetailsSchema, { usedTokens, maxTokens: 200_000 }),
     }),
   }),
   readFile: (path: string, toolCallId = TOOL_CALL_ID): ServerMessage => ({
@@ -635,6 +656,41 @@ describe("native stream contract: Pi tool calls", () => {
     expect(resumedEvents).toEqual(["start", "text_start", "text_delta", "text_end", "done"]);
     expect(message.stopReason).toBe("stop");
     expect(textOf(message)).toBe("README describes the Pi provider.");
+  });
+
+  it("bills the run's turnEnded counters across the messages of its tool pause", async () => {
+    const stream = streamPi(context(user(PROMPT)));
+    const bridge = await spawned(0);
+    bridge.send(cursor.tokens(40), cursor.readFile("README.md"));
+    const { message: toolUse } = await outcome(stream);
+    expect(toolUse.usage.output, "the paused message is billed by the estimate").toBe(40);
+
+    const resumed = streamReadResult(toolUse);
+    await settle();
+    // One turnEnded for the whole run: both model steps, not just the one after the pause.
+    bridge.send(
+      cursor.tokens(10),
+      cursor.text("README describes the Pi provider."),
+      cursor.contextSize(2_600),
+      cursor.turnEnded({
+        inputTokens: 3_000n,
+        outputTokens: 80n,
+        cacheReadTokens: 2_000n,
+        cacheWriteTokens: 500n,
+      }),
+    );
+    bridge.finishStream();
+    const { message } = await outcome(resumed);
+
+    const billed = (key: "input" | "output" | "cacheRead" | "cacheWrite") =>
+      toolUse.usage[key] + message.usage[key];
+    expect({
+      input: billed("input"),
+      output: billed("output"),
+      cacheRead: billed("cacheRead"),
+      cacheWrite: billed("cacheWrite"),
+    }).toEqual({ input: 500, output: 80, cacheRead: 2_000, cacheWrite: 500 });
+    expect(message.usage.totalTokens, "the context size compaction reads").toBe(2_610);
   });
 });
 
