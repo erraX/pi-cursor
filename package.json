@@ -32,6 +32,7 @@
     "LICENSE",
     "README.md",
     "CHANGELOG.md",
+    "extension.ts",
     "dist"
   ],
   "scripts": {
@@ -60,7 +61,7 @@
   },
   "pi": {
     "extensions": [
-      "./dist/index.js"
+      "./extension.ts"
     ]
   },
   "dependencies": {
