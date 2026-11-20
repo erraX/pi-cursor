@@ -799,23 +799,29 @@ function sendExecThrow(
   sendFrame(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
 }
 
-/** Ends the client side of one exec, keyed by exec id like `ExecClientThrow`. */
-function sendExecStreamClose(
-  execMsg: ExecServerMessage,
-  sendFrame: (data: Uint8Array) => void,
-): void {
+/**
+ * The frame that ends the client side of one exec, keyed by exec id like `ExecClientThrow`.
+ * Cursor's own executor sends it after an exec's last result, and after the throw for a frame no
+ * handler claims.
+ */
+export function execStreamCloseFrame(id: number): Uint8Array {
   const control = create(ExecClientControlMessageSchema, {
-    message: {
-      case: "streamClose",
-      value: create(ExecClientStreamCloseSchema, { id: (execMsg as any).id }),
-    },
+    message: { case: "streamClose", value: create(ExecClientStreamCloseSchema, { id }) },
   });
   const clientMessage = create(AgentClientMessageSchema, {
     message: { case: "execClientControlMessage", value: control },
   });
-  sendFrame(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
+  return frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage));
 }
 
+function sendExecStreamClose(
+  execMsg: ExecServerMessage,
+  sendFrame: (data: Uint8Array) => void,
+): void {
+  sendFrame(execStreamCloseFrame((execMsg as any).id));
+}
+
+/** Answers an exec with its one result and closes it, as Cursor's own executor does. */
 function sendExecResult(
   execMsg: ExecServerMessage,
   messageCase: string,
@@ -831,6 +837,7 @@ function sendExecResult(
     message: { case: "execClientMessage", value: execClientMessage },
   });
   sendFrame(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
+  sendExecStreamClose(execMsg, sendFrame);
 }
 
 function sendNativeFrame(
