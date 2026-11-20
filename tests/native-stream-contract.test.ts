@@ -1129,6 +1129,64 @@ describe("native stream contract: idle watchdog", () => {
     expect(bridges).toHaveLength(3);
   });
 
+  it("stops restarting a stream that never produces anything", async () => {
+    process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES = "0";
+    const stream = streamPi(context(user(PROMPT)));
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await spawned(attempt);
+      idleOut();
+    }
+    const { message } = await outcome(stream);
+
+    expect(message.stopReason).toBe("error");
+    expect(message.errorMessage).toMatch(/idle timeout/);
+    expect(message.errorMessage).toContain("restarted 2 times without any model output");
+    await settle();
+    expect(bridges, "the request and two free restarts").toHaveLength(3);
+    expect(bridges.map(lastAction), "every silent run is cancelled").toEqual([
+      "cancelAction",
+      "cancelAction",
+      "cancelAction",
+    ]);
+  });
+
+  it("charges further stalls to the retry budget once the free restarts are used", async () => {
+    process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES = "2";
+    const stream = streamPi(context(user(PROMPT)));
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await spawned(attempt);
+      idleOut();
+    }
+    const { message } = await outcome(stream);
+
+    expect(message.stopReason).toBe("error");
+    expect(message.errorMessage).toMatch(/idle timeout .* over 3 attempts \(2 retries\)/);
+    await settle();
+    expect(bridges, "the request, two free restarts and two retries").toHaveLength(5);
+    expect(
+      bridges.map((bridge) => userText(onlyRunRequest(bridge))),
+      "each restart asks the same question",
+    ).toEqual([PROMPT, PROMPT, PROMPT, PROMPT, PROMPT]);
+  });
+
+  it("keeps restarting a stream that stalls again and again but answers in between", async () => {
+    process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES = "0";
+    const stream = streamPi(context(user(PROMPT)));
+    const parts = ["One", " two", " three", " four"];
+    for (let attempt = 0; attempt < parts.length; attempt++) {
+      const bridge = await spawned(attempt);
+      bridge.send(cursor.checkpoint(), cursor.text(parts[attempt]!));
+      idleOut();
+    }
+
+    const last = await spawned(parts.length);
+    last.send(cursor.text(" five."), cursor.turnEnded());
+    last.finishStream();
+    const { message } = await outcome(stream);
+    expect(message.stopReason).toBe("stop");
+    expect(textOf(message)).toBe("One two three four five.");
+  });
+
   it("fails a stream that idles out after text when there is no checkpoint", async () => {
     const stream = streamPi(context(user(PROMPT)));
     const bridge = await spawned(0);

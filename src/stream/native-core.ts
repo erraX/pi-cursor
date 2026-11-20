@@ -128,6 +128,7 @@ import {
   canRecoverAfterTransportLoss,
   createStreamIdleWatchdog,
   DEFAULT_STREAM_PARK_TIMEOUT_MS,
+  MAX_IDLE_RECOVERIES_WITHOUT_OUTPUT,
   resolveResumeIdleTimeoutMs,
   resolveStreamIdleMaxRetries,
   resolveStreamIdleTimeoutMs,
@@ -884,8 +885,17 @@ function writeNativeStream(
         hasCheckpoint: !!checkpointRef.current,
       });
 
-      // Recovery is not a retry, so it can run even when maxRetries is zero.
-      if (idleRetry?.recoverBeforeRetry && allowRestart) {
+      // Recovery is not a retry, so it can run even when maxRetries is zero. It is still bounded:
+      // an upstream that never produces anything used to be restarted at the same attempt number
+      // on every timeout, forever. After a few recoveries in a row without model output, further
+      // stalls are charged to the retry budget below, and the turn fails when that runs out.
+      const idleRecoveries = idleRetry?.idleRecoveries ?? 0;
+      if (
+        idleRetry?.recoverBeforeRetry &&
+        allowRestart &&
+        idleRecoveries < MAX_IDLE_RECOVERIES_WITHOUT_OUTPUT
+      ) {
+        idleRetry.idleRecoveries = idleRecoveries + 1;
         debugLog("native.stream.idle_recovery_before_retry", {
           requestId,
           bridgeKey,
@@ -894,6 +904,7 @@ function writeNativeStream(
           modelId,
           attempt,
           maxRetries,
+          idleRecovery: idleRetry.idleRecoveries,
           hasCheckpoint: !!checkpointRef.current,
           emittedUserVisibleContent,
         });
@@ -946,6 +957,7 @@ function writeNativeStream(
           finalAttempt,
           maxRetries,
           emittedUserVisibleContent,
+          idleRetry?.idleRecoveries ?? 0,
         ),
         "error",
         state,
@@ -1213,6 +1225,15 @@ function writeNativeStream(
           idleWatchdog.reset();
         } else if (progress === "liveness" && parkedExecCase === undefined) {
           idleWatchdog.reset();
+        }
+        // Model output ends a run of idle recoveries. Request setup and blob traffic do not:
+        // every restarted stream exchanges those before the model says anything.
+        if (
+          idleRetry &&
+          progress === "work" &&
+          serverMessage.message.case === "interactionUpdate"
+        ) {
+          idleRetry.idleRecoveries = 0;
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1860,6 +1881,7 @@ function formatStreamIdleTimeoutMessage(
   attempt: number,
   maxRetries: number,
   emittedUserVisibleContent = false,
+  idleRecoveries = 0,
 ): string {
   const base = `Cursor stream idle timeout after ${timeoutMs}ms without upstream progress`;
   const attemptLabel = attempt === 1 ? "attempt" : "attempts";
@@ -1869,9 +1891,13 @@ function formatStreamIdleTimeoutMessage(
   const partialPart = emittedUserVisibleContent
     ? " Partial assistant output was already streamed; automatic retry requires a checkpoint and was unavailable or exhausted."
     : "";
+  const recoveryPart =
+    idleRecoveries > 0
+      ? ` The stream had already been restarted ${idleRecoveries} ${idleRecoveries === 1 ? "time" : "times"} without any model output.`
+      : "";
   const tunePart =
     " Tune PI_CURSOR_STREAM_IDLE_TIMEOUT_MS / PI_CURSOR_RESUME_IDLE_TIMEOUT_MS if long reasoning turns are expected.";
-  return `${base}${retryPart}.${partialPart}${tunePart}`;
+  return `${base}${retryPart}.${recoveryPart}${partialPart}${tunePart}`;
 }
 
 function formatStreamParkMessage(execCase: string, timeoutMs: number): string {

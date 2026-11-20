@@ -32,6 +32,15 @@ export const DEFAULT_RESUME_IDLE_TIMEOUT_MS = 180_000;
 // More generations for multi-hour agent sessions; each attempt can force-refresh auth.
 export const DEFAULT_STREAM_IDLE_MAX_RETRIES = 5;
 
+/**
+ * Idle recoveries a stream may take in a row, with no model output in between, before a stall
+ * is charged to the retry budget. A recovery restarts a silent stream without spending a retry,
+ * which is right for a one-off stall and wrong for an upstream that never answers: unbounded,
+ * that restarted the request every idle timeout until the user interrupted it. With the default
+ * retry budget a permanently silent upstream now fails after 1 + 2 + 5 attempts.
+ */
+export const MAX_IDLE_RECOVERIES_WITHOUT_OUTPUT = 2;
+
 /** Soft cap on retained blob bytes per conversation (images + turn blobs). */
 export const MAX_CONVERSATION_BLOB_BYTES = 128 * 1024 * 1024;
 export const MAX_ACTIVE_BLOB_BYTES = MAX_CONVERSATION_BLOB_BYTES;

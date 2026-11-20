@@ -75,6 +75,8 @@ Heartbeats are **liveness** only: they reset the watchdog while the run is healt
 
 Silent retries (`PI_CURSOR_STREAM_IDLE_MAX_RETRIES`, default `5`) recover from silence and transport loss. Blind full-request restarts are blocked once text/thinking was streamed; checkpoint continuation is still allowed so partial output does not force a hard failure.
 
+A stall first restarts the stream without spending a retry. At most two such restarts may follow each other with no model output in between; model output (text, thinking, token or tool-call updates) starts the count again. After that each further stall spends one retry, and the turn fails with an idle-timeout error once the retries are used. An upstream that never answers therefore ends after `1 + 2 + PI_CURSOR_STREAM_IDLE_MAX_RETRIES` attempts, 24 minutes with the defaults, instead of being restarted until the user interrupts.
+
 ## Attributions
 
 Adapted from MIT community research and lineage docs:
