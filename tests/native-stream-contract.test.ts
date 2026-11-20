@@ -83,9 +83,9 @@ function serverFrame(message: ServerMessage): Buffer {
   );
 }
 
-function endStreamErrorFrame(code: string, message: string): Buffer {
+function endStreamErrorFrame(code: string, message: string, details?: unknown[]): Buffer {
   return connectFrame(
-    Buffer.from(JSON.stringify({ error: { code, message } }), "utf8"),
+    Buffer.from(JSON.stringify({ error: { code, message, details } }), "utf8"),
     ConnectFlag.EndStream,
   );
 }
@@ -217,8 +217,8 @@ function createFakeBridge() {
     received: () => frames.map(decodeClientFrame),
     send: (...messages: ServerMessage[]) => deliver(Buffer.concat(messages.map(serverFrame))),
     finishStream: () => streamDoneListener?.(),
-    failStream: (code: string, message: string) => {
-      deliver(endStreamErrorFrame(code, message));
+    failStream: (code: string, message: string, details?: unknown[]) => {
+      deliver(endStreamErrorFrame(code, message, details));
       if (!exited) streamDoneListener?.();
     },
     goaway: () => {
@@ -515,6 +515,85 @@ describe("native stream contract: a turn Cursor completes", () => {
 
     const { message } = await finishWithText(bridge, second);
     expect(message.stopReason).toBe("stop");
+  });
+});
+
+describe("native stream contract: a run Cursor refuses", () => {
+  /** Cursor's `aiserver.v1.ErrorDetails` entry, in the JSON form its end-stream error carries. */
+  function cursorDetails(error: string, title: string, detail: string, additionalInfo?: object) {
+    return [
+      {
+        type: "aiserver.v1.ErrorDetails",
+        debug: { error, details: { title, detail, isRetryable: false, additionalInfo } },
+      },
+    ];
+  }
+
+  it("tells Pi why Cursor refused a model id it does not know", async () => {
+    const stream = streamPi(context(user(PROMPT)));
+    const bridge = await spawned(0);
+    bridge.failStream(
+      "not_found",
+      "Error",
+      cursorDetails(
+        "ERROR_BAD_MODEL_NAME",
+        "AI Model Not Found",
+        'Model name is not valid: "grok-4.7-500k-max-mode-fast"',
+      ),
+    );
+    const { message } = await outcome(stream);
+
+    expect(message.stopReason).toBe("error");
+    expect(message.errorMessage).toBe(
+      "Connect error not_found: Error [cursor: AI Model Not Found: " +
+        'Model name is not valid: "grok-4.7-500k-max-mode-fast" (ERROR_BAD_MODEL_NAME)]',
+    );
+    await settle();
+    expect(bridges, "an unknown model is not retried").toHaveLength(1);
+  });
+
+  it("tells Pi what Cursor said when a retried failure comes back", async () => {
+    const outage = cursorDetails(
+      "ERROR_PROVIDER_ERROR",
+      "Provider Error",
+      "We're having trouble connecting to the model provider.",
+      { providerStatusCode: "401" },
+    );
+    const stream = streamPi(context(user(PROMPT)));
+    (await spawned(0)).failStream("resource_exhausted", "Error", outage);
+    (await spawned(1)).failStream("resource_exhausted", "Error", outage);
+    const { message } = await outcome(stream);
+
+    expect(message.stopReason).toBe("error");
+    expect(message.errorMessage).toContain("Connect error resource_exhausted: Error");
+    expect(message.errorMessage).toContain(
+      "[cursor: Provider Error: We're having trouble connecting to the model provider. " +
+        "(ERROR_PROVIDER_ERROR; the model provider answered Cursor with HTTP 401)]",
+    );
+    expect(message.errorMessage).not.toContain("auth-hint");
+    await settle();
+    expect(bridges, "the retry policy does not read Cursor's explanation").toHaveLength(2);
+  });
+
+  it("tells Pi what Cursor said when a retriable failure cannot be retried after all", async () => {
+    const stream = streamPi(context(user(PROMPT)));
+    const bridge = await spawned(0);
+    // A rate limit drops the checkpoint, and text already streamed rules out a blind replay.
+    bridge.send(cursor.checkpoint(), cursor.text("Partial answer"));
+    bridge.failStream(
+      "resource_exhausted",
+      "Error",
+      cursorDetails("ERROR_RATE_LIMITED", "Slow down", "Too many requests in a short time."),
+    );
+    const { message } = await outcome(stream);
+
+    expect(message.stopReason).toBe("error");
+    expect(message.errorMessage).toContain("Connect error resource_exhausted: Error");
+    expect(message.errorMessage).toContain(
+      "[cursor: Slow down: Too many requests in a short time. (ERROR_RATE_LIMITED)]",
+    );
+    await settle();
+    expect(bridges).toHaveLength(1);
   });
 });
 

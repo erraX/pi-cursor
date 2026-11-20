@@ -116,4 +116,53 @@ describe("drift reporting in stream errors", () => {
     expect(message).toBe(raw);
     expect(message).not.toContain("wire-drift");
   });
+
+  describe("when Cursor explains the failure itself", () => {
+    // What Cursor sent for an image request to GLM 5.3 Flash (2026-11-20).
+    const providerOutage = {
+      errorCode: "ERROR_PROVIDER_ERROR",
+      title: "Provider Error",
+      detail: "We're having trouble connecting to the model provider.",
+      providerStatusCode: "401",
+    };
+    const raw = "Connect error resource_exhausted: Error";
+
+    it("reports Cursor's explanation instead of a schema-lag note", () => {
+      recordDriftSignal("unknown_fields", "conversationCheckpointUpdate.payload#38,39,46");
+      const message = enhanceCursorStreamError(raw, providerOutage);
+
+      expect(message).toBe(
+        `${raw} [cursor: Provider Error: We're having trouble connecting to the model provider. ` +
+          "(ERROR_PROVIDER_ERROR; the model provider answered Cursor with HTTP 401)]",
+      );
+    });
+
+    it("does not read the provider's status as an expired Pi token", () => {
+      expect(enhanceCursorStreamError(raw, providerOutage)).not.toContain("auth-hint");
+    });
+
+    it("still names drift that can strand a turn", () => {
+      recordDriftSignal("server_message", "brandNewCase");
+      const message = enhanceCursorStreamError(raw, providerOutage);
+
+      expect(message).toContain("[cursor: Provider Error");
+      expect(message).toContain("server_message:brandNewCase");
+    });
+
+    it("keeps the schema-lag note for a failure Cursor did not explain", () => {
+      recordDriftSignal("unknown_fields", "conversationCheckpointUpdate.payload#38,39,46");
+
+      expect(enhanceCursorStreamError(raw)).toContain("schema is likely behind Cursor");
+    });
+
+    it("keeps the auth hint when Cursor itself rejects the token", () => {
+      const message = enhanceCursorStreamError("Connect error unauthenticated: Error", {
+        errorCode: "ERROR_NOT_LOGGED_IN",
+        title: "Not logged in",
+      });
+
+      expect(message).toContain("[cursor: Not logged in (ERROR_NOT_LOGGED_IN)]");
+      expect(message).toContain("auth-hint");
+    });
+  });
 });

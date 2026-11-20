@@ -4,7 +4,11 @@ import {
   isAuthErrorMessage,
   isProtocolMismatchMessage,
 } from "../src/stream/protocol.js";
-import { createConnectFrameParser, parseConnectEndStream } from "../src/client/bridge.js";
+import {
+  createConnectFrameParser,
+  cursorErrorDetailOf,
+  parseConnectEndStream,
+} from "../src/client/bridge.js";
 
 describe("protocol helpers", () => {
   it("detects auth and protocol mismatch messages", () => {
@@ -34,6 +38,60 @@ describe("protocol helpers", () => {
       new TextEncoder().encode(JSON.stringify({ error: { code: "internal", message: "boom" } })),
     );
     expect(err?.message).toMatch(/Connect error internal: boom/);
+    expect(cursorErrorDetailOf(err)).toBeUndefined();
+  });
+
+  it("keeps Cursor's explanation beside the end-stream error without changing its message", () => {
+    // Captured from Cursor on 2026-11-20 for a model id it does not know; `value` shortened.
+    const err = parseConnectEndStream(
+      new TextEncoder().encode(
+        JSON.stringify({
+          error: {
+            code: "not_found",
+            message: "Error",
+            details: [
+              {
+                type: "aiserver.v1.ErrorDetails",
+                debug: {
+                  error: "ERROR_BAD_MODEL_NAME",
+                  details: {
+                    title: "AI Model Not Found",
+                    detail: 'Model name is not valid: "grok-4.7-500k-max-mode-fast"',
+                    isRetryable: false,
+                  },
+                  isExpected: true,
+                },
+                value: "CAUSWgoSQUkgTW9kZWwgTm90IEZvdW5k",
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    expect(err?.message).toBe("Connect error not_found: Error");
+    expect(cursorErrorDetailOf(err)).toEqual({
+      errorCode: "ERROR_BAD_MODEL_NAME",
+      title: "AI Model Not Found",
+      detail: 'Model name is not valid: "grok-4.7-500k-max-mode-fast"',
+      providerStatusCode: undefined,
+    });
+  });
+
+  it.each([
+    ["no details", undefined],
+    ["details that are not a list", "oops"],
+    ["an entry without a debug object", [{ type: "aiserver.v1.ErrorDetails", value: "CAU" }]],
+    ["a debug object that says nothing", [{ debug: { isExpected: true } }]],
+  ])("finds no explanation in %s", (_label, details) => {
+    const err = parseConnectEndStream(
+      new TextEncoder().encode(
+        JSON.stringify({ error: { code: "internal", message: "boom", details } }),
+      ),
+    );
+
+    expect(err?.message).toBe("Connect error internal: boom");
+    expect(cursorErrorDetailOf(err)).toBeUndefined();
   });
 
   it("frames connect messages and parses them back", () => {

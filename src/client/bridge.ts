@@ -209,14 +209,67 @@ export function createConnectFrameParser(
   };
 }
 
+/**
+ * Cursor's own account of a failed run, from the `aiserver.v1.ErrorDetails` entry of a Connect
+ * end-stream error. The top-level `message` is usually just `"Error"`; this is where Cursor
+ * says what happened (`Model name is not valid: "..."`, a provider outage, a usage limit).
+ */
+export interface CursorErrorDetail {
+  /** Cursor's error enum, e.g. `ERROR_BAD_MODEL_NAME` or `ERROR_PROVIDER_ERROR`. */
+  errorCode?: string;
+  title?: string;
+  detail?: string;
+  /** HTTP status the upstream model provider returned to Cursor, when Cursor reports one. */
+  providerStatusCode?: string;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function cursorErrorDetailFrom(details: unknown): CursorErrorDetail | undefined {
+  if (!Array.isArray(details)) return undefined;
+  for (const entry of details) {
+    const debug = (entry as { debug?: unknown } | null)?.debug;
+    if (!debug || typeof debug !== "object") continue;
+    const { error, details: inner } = debug as { error?: unknown; details?: unknown };
+    const fields = (inner && typeof inner === "object" ? inner : {}) as {
+      title?: unknown;
+      detail?: unknown;
+      additionalInfo?: { providerStatusCode?: unknown } | null;
+    };
+    const found: CursorErrorDetail = {
+      errorCode: nonEmptyString(error),
+      title: nonEmptyString(fields.title),
+      detail: nonEmptyString(fields.detail),
+      providerStatusCode: nonEmptyString(fields.additionalInfo?.providerStatusCode),
+    };
+    if (found.errorCode || found.title || found.detail) return found;
+  }
+  return undefined;
+}
+
+/** The detail `parseConnectEndStream` found on an end-stream error, if Cursor sent one. */
+export function cursorErrorDetailOf(error: unknown): CursorErrorDetail | undefined {
+  return (error as { cursorErrorDetail?: CursorErrorDetail } | null)?.cursorErrorDetail;
+}
+
+/**
+ * The error's `message` stays `Connect error <code>: <message>`: retry classification matches on
+ * it, and Cursor's free-form detail text must not change which failures are retried. The detail
+ * rides alongside (`cursorErrorDetailOf`) for the message the user finally sees.
+ */
 export function parseConnectEndStream(data: Uint8Array): Error | null {
   try {
     const payload = JSON.parse(new TextDecoder().decode(data));
     const error = payload?.error;
-    if (error)
-      return new Error(
+    if (error) {
+      const parsed = new Error(
         `Connect error ${error.code ?? "unknown"}: ${error.message ?? "Unknown error"}`,
       );
+      const cursorErrorDetail = cursorErrorDetailFrom(error.details);
+      return cursorErrorDetail ? Object.assign(parsed, { cursorErrorDetail }) : parsed;
+    }
     return null;
   } catch {
     return new Error("Failed to parse Connect end stream");
