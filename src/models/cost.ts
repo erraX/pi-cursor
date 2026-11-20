@@ -37,7 +37,67 @@ export const MODEL_COST_TABLE: Record<string, ModelCost> = {
 
 export const DEFAULT_COST: ModelCost = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 };
 
+/**
+ * Families Cursor prices by variant, read from https://cursor.com/docs/models/<model> (2026-11).
+ * Fast and long-context rows cost more than the base model, and the lookup below strips a
+ * trailing `-fast` before the exact-id table, so these stay out of that table and match on the
+ * whole Pi model id instead (`grok-4.7-500k-max-mode-fast`, `glm-5p3-flash-max`, ...). Ordered
+ * most specific first. Cursor lists no cache-write fee for any of them.
+ */
+const VARIANT_PRICED_PATTERNS: Array<{ match: (id: string) => boolean; cost: ModelCost }> = [
+  {
+    match: (id) => /composer-2\.5.*fast/.test(id),
+    cost: { input: 3, output: 15, cacheRead: 0.5, cacheWrite: 0 },
+  },
+  {
+    match: (id) => /composer-2\.5/.test(id),
+    cost: { input: 0.5, output: 2.5, cacheRead: 0.2, cacheWrite: 0 },
+  },
+  {
+    match: (id) => /grok-4\.7.*500k.*fast/.test(id),
+    cost: { input: 6, output: 18, cacheRead: 1.5, cacheWrite: 0 },
+  },
+  {
+    match: (id) => /grok-4\.7.*(?:500k|fast)/.test(id),
+    cost: { input: 4, output: 12, cacheRead: 1, cacheWrite: 0 },
+  },
+  {
+    match: (id) => /grok-4\.6.*fast/.test(id),
+    cost: { input: 4, output: 12, cacheRead: 1, cacheWrite: 0 },
+  },
+  {
+    match: (id) => /grok-4\.5.*fast/.test(id),
+    cost: { input: 4, output: 18, cacheRead: 1, cacheWrite: 0 },
+  },
+  {
+    match: (id) => /grok-4\.[567](?:-|$)/.test(id),
+    cost: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
+  },
+  {
+    match: (id) => /kimi-k3/.test(id),
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 },
+  },
+  {
+    match: (id) => /kimi-k2\.7/.test(id),
+    cost: { input: 0.95, output: 4, cacheRead: 0.19, cacheWrite: 0 },
+  },
+  {
+    match: (id) => /deepseek-v4\.?1-flash/.test(id),
+    cost: { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0 },
+  },
+  // Cursor's wire id spells the version `5p3`; the docs and GLM 5.2 use a dot.
+  {
+    match: (id) => /glm-5[.p]3-flash/.test(id),
+    cost: { input: 0.15, output: 0.5, cacheRead: 0.029, cacheWrite: 0 },
+  },
+  {
+    match: (id) => /glm-5[.p][23](?:-|$)/.test(id),
+    cost: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 },
+  },
+];
+
 export const MODEL_COST_PATTERNS: Array<{ match: (id: string) => boolean; cost: ModelCost }> = [
+  ...VARIANT_PRICED_PATTERNS,
   {
     match: (id) => /claude.*opus.*fast/i.test(id),
     cost: { input: 30, output: 150, cacheRead: 3, cacheWrite: 37.5 },
