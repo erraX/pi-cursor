@@ -15,7 +15,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { BridgeHandle } from "../src/client/bridge.js";
+import type { BridgeHandle, SpawnBridgeOptions } from "../src/client/bridge.js";
 import {
   AgentClientMessageSchema,
   AgentServerMessageSchema,
@@ -263,6 +263,7 @@ type FakeBridge = ReturnType<typeof createFakeBridge>;
 
 let cacheDir: string;
 let bridges: FakeBridge[];
+let spawnOptions: SpawnBridgeOptions[];
 let tokenRequests: Array<{ forceRefresh?: boolean } | undefined>;
 let sessionId: string;
 let sessionCount = 0;
@@ -275,10 +276,13 @@ beforeEach(() => {
   delete process.env.PI_CURSOR_STREAM_IDLE_TIMEOUT_MS;
   delete process.env.PI_CURSOR_PROMPT_HISTORY;
   resetCacheDirForTests();
+  delete process.env.PI_CURSOR_NATIVE_TOOLS;
   bridges = [];
+  spawnOptions = [];
   tokenRequests = [];
   sessionId = `contract-session-${++sessionCount}`;
-  setBridgeFactoryForTests(() => {
+  setBridgeFactoryForTests((options) => {
+    spawnOptions.push(options);
     const bridge = createFakeBridge();
     bridges.push(bridge);
     return bridge.handle;
@@ -293,6 +297,7 @@ afterEach(() => {
   delete process.env.PI_CURSOR_LIFECYCLE_LOG;
   delete process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES;
   delete process.env.PI_CURSOR_PROMPT_HISTORY;
+  delete process.env.PI_CURSOR_NATIVE_TOOLS;
   resetCacheDirForTests();
   // The lifecycle log appends asynchronously and can land mid-removal (ENOTEMPTY).
   rmSync(cacheDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
@@ -615,6 +620,27 @@ describe("native stream contract: a run Cursor refuses", () => {
     );
     await settle();
     expect(bridges).toHaveLength(1);
+  });
+});
+
+describe("native stream contract: Cursor's built-in tools", () => {
+  it("limits the run to the built-in tools Pi can serve", async () => {
+    const stream = streamPi(context(user(PROMPT)));
+    const bridge = await spawned(0);
+    // Local file and shell tools are not offered, so the model cannot pick one to be refused.
+    expect(spawnOptions[0]!.headers).toEqual({
+      "x-cursor-agent-allowed-tools":
+        "mcp_tool_call,get_mcp_tools_tool_call,fetch_tool_call,web_fetch_tool_call,web_search_tool_call",
+    });
+    await finishWithText(bridge, stream);
+  });
+
+  it("keeps Cursor's whole toolset when PI_CURSOR_NATIVE_TOOLS=1", async () => {
+    process.env.PI_CURSOR_NATIVE_TOOLS = "1";
+    const stream = streamPi(context(user(PROMPT)));
+    const bridge = await spawned(0);
+    expect(spawnOptions[0]!.headers).toEqual({});
+    await finishWithText(bridge, stream);
   });
 });
 

@@ -33,7 +33,9 @@ function fakeStream(): H2Stream & { emit: EventEmitter["emit"] } {
   return stream as unknown as H2Stream & { emit: EventEmitter["emit"] };
 }
 
-function sessionHarness(options: { persistent?: boolean; unary?: boolean } = {}) {
+function sessionHarness(
+  options: { persistent?: boolean; unary?: boolean; headers?: Record<string, string> } = {},
+) {
   const requestHeaders: Record<string, unknown>[] = [];
   const streams: ReturnType<typeof fakeStream>[] = [];
   const emitter = new EventEmitter();
@@ -98,6 +100,20 @@ describe("in-process h2 session bridge", () => {
     expect(headers[":path"]).toBe("/agent.v1.AgentService/Run");
     expect(headers["content-type"]).toBe("application/connect+proto");
     expect(headers.authorization).toBe("Bearer token-1");
+  });
+
+  it("adds the bridge's extra headers to every stream, without replacing its own", () => {
+    const { streams, requestHeaders, bridge } = sessionHarness({
+      persistent: true,
+      headers: { "x-cursor-agent-allowed-tools": "mcp_tool_call", authorization: "Bearer other" },
+    });
+    expect(requestHeaders[0]!["x-cursor-agent-allowed-tools"]).toBe("mcp_tool_call");
+    expect(requestHeaders[0]!.authorization).toBe("Bearer token-1");
+
+    streams[0]!.emit("end");
+    bridge.openStream!("token-2");
+    expect(requestHeaders[1]!["x-cursor-agent-allowed-tools"]).toBe("mcp_tool_call");
+    expect(requestHeaders[1]!.authorization).toBe("Bearer token-2");
   });
 
   it("delivers a retriable end-stream frame and closes with exit code 2 on GOAWAY", () => {
