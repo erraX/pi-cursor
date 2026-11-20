@@ -55,10 +55,11 @@ function connectEndStreamErrorFrame(code: string, message: string): Buffer {
 /**
  * Maps an opaque HTTP/2 negotiation failure into an actionable diagnostic message.
  *
- * Ported ALPN diagnostic: an ALPN-stripping TLS-intercepting proxy (e.g.
- * Zscaler) causes the TLS handshake to negotiate no `h2` protocol, and the HTTP/2 client throws
- * `ERR_HTTP2_ERROR: h2 is not supported`. Cursor's RPCs are HTTP/2-only, so there is no h1
- * fallback — the call simply cannot proceed. Non-ALPN errors pass through untouched.
+ * An ALPN-stripping TLS-intercepting proxy (e.g. Zscaler) makes the TLS handshake negotiate no
+ * `h2` protocol. Bun throws `ERR_HTTP2_ERROR: h2 is not supported`; Node connects anyway, so the
+ * session checks ALPN itself on connect (see `createBridgeHandleForSession`). The streaming Run
+ * RPC then falls back to HTTP/1.1 (h1-bridge.ts); unary RPCs cannot. Non-ALPN errors pass
+ * through untouched.
  */
 export function describeH2TransportError(error: unknown, baseUrl: string): string {
   const code = (error as { code?: unknown } | null)?.code;
@@ -99,6 +100,8 @@ function buildRequestHeaders(
 export type H2Session = Pick<http2.ClientHttp2Session, "request" | "on" | "close" | "destroy"> & {
   readonly destroyed: boolean;
   readonly closed: boolean;
+  /** The connection the session runs on; absent on test doubles. */
+  readonly socket?: unknown;
   ping?(callback: (err: Error | null) => void): void;
 };
 
@@ -302,6 +305,25 @@ export function createBridgeHandleForSession(
     const message = describeH2TransportError(error, baseUrl);
     appendDiagnostic(`[h2-session] client error: ${message}`);
     debugLog("bridge.session_error", { message });
+    destroySession();
+    finalizeExit(1);
+  });
+
+  // Node opens an HTTP/2 session even when TLS negotiated no h2 and sends the connection preface
+  // into whatever answered, which an HTTP/1.1 endpoint rejects ("Protocol error") or ignores
+  // until the connect watchdog fires. A TLS session that did not choose h2 cannot carry HTTP/2,
+  // so fail it now, recognizably. Plain-text loopback sessions have no ALPN and are left alone.
+  session.on("connect", () => {
+    if (exited) return;
+    const socket = session.socket as
+      { encrypted?: boolean; alpnProtocol?: string | false } | undefined;
+    if (!socket?.encrypted || socket.alpnProtocol === "h2") return;
+    const message =
+      `Cursor transport could not negotiate HTTP/2 with ${baseUrl}: TLS negotiated ` +
+      `${socket.alpnProtocol ? `"${socket.alpnProtocol}"` : "no protocol"} via ALPN — ` +
+      "typically an ALPN-stripping TLS-intercepting proxy (e.g. Zscaler).";
+    appendDiagnostic(`[h2-session] client error: ${message}`);
+    debugLog("bridge.session_no_h2", { alpn: socket.alpnProtocol || null });
     destroySession();
     finalizeExit(1);
   });

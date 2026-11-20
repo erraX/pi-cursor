@@ -1,4 +1,5 @@
 import { ConnectFlag } from "../types/enums.js";
+import { createRunBridge, CURSOR_RUN_PATH } from "./h1-bridge.js";
 import { createInProcessBridge } from "./h2-session.js";
 
 const CONNECT_END_STREAM_FLAG = ConnectFlag.EndStream;
@@ -147,6 +148,9 @@ export function spawnBridge(
     url: options.url,
     unary: options.unary ?? false,
   });
+  // The streaming Run RPC can fall back to HTTP/1.1 (RunSSE + BidiAppend); unary RPCs stay on h2.
+  if (!options.unary && options.rpcPath === CURSOR_RUN_PATH)
+    return createRunBridge(options, debugLog);
   return createInProcessBridge(options, debugLog);
 }
 

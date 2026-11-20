@@ -152,7 +152,8 @@ src/
 - Both streaming and unary RPCs run in-process via `node:http2` — no subprocess is spawned anywhere in this codebase.
 - Streaming (the bidirectional Connect RPC, `agent.v1.AgentService/Run`) goes through `h2-session.ts`, which opens a persistent `http2.ClientHttp2Session` and reuses it across turns (`openStream()`) instead of paying a fresh TLS/H2 handshake each time.
 - Unary RPCs (model discovery, usage) use the dedicated one-shot client in `h2-unary.ts` — genuinely simpler than streaming (one write, then read to completion), kept separate rather than merged into `h2-session.ts`. `PI_CURSOR_UNARY_BRIDGE=1` forces the general-purpose `h2-session.ts` bridge as a fallback path instead, for diagnostics/testing.
-- `fetch`/`undici` cannot be used for either path: Cursor's hosts speak HTTP/2 only and undici rejects the h2 preface.
+- `fetch`/`undici` cannot be used for either path: Cursor's agent hosts (`agentn.*`) speak HTTP/2 only and undici rejects the h2 preface.
+- When HTTP/2 cannot be negotiated (an ALPN-stripping TLS proxy), the streaming Run RPC falls back to HTTP/1.1 in `h1-bridge.ts`: `AgentService/RunSSE` streams the server half and each client frame goes out as a unary `BidiService/BidiAppend`, both on `api2.cursor.sh` (the only host serving them over HTTP/1.1). The fallback replays a run only if HTTP/2 failed before Cursor sent anything, then keeps new runs on HTTP/1.1 for 10 minutes. `PI_CURSOR_TRANSPORT=http1|http2` forces a transport. The HTTP/1.1 bridge keeps the same `BridgeHandle` exit-code contract as `h2-session.ts`. Unary RPCs have no fallback.
 - This project used to proxy the streaming RPC through a Node child process (`h2-bridge.mjs`). That subprocess is gone. `h2-session.ts`'s module docstring explains the exit-code/retry contract (`classifyBridgeExit()` in `src/stream/transport-errors.ts`) this transport must preserve exactly; read it before touching that file. ALPN-stripping proxies can still break HTTP/2 (ported as `describeH2TransportError`).
 
 ### 7. Runtime Support: Node.js Only
@@ -184,3 +185,4 @@ src/
 | `PI_CURSOR_H2_IDLE_TIMEOUT_MS`                 | HTTP/2 bridge activity idle timeout in ms (default: `0` / disabled)                                                                                                  |
 | `PI_CURSOR_PROMPT_HISTORY`                     | Set to `0` or `false` to stop publishing system prompt + history as prompt messages                                                                                  |
 | `PI_CURSOR_NATIVE_TOOLS`                       | Set to `1` to stop limiting a run's built-in tools (`x-cursor-agent-allowed-tools`); Cursor's local tools are then offered and rejected on use                       |
+| `PI_CURSOR_TRANSPORT`                          | Transport for the streaming Run RPC: `auto` (default: HTTP/2, falling back to HTTP/1.1 when HTTP/2 cannot be negotiated), `http2`, or `http1`                        |
