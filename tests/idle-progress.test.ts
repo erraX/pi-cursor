@@ -79,7 +79,8 @@ describe("idle progress classification", () => {
         (execution) => executions.push(execution),
       ),
     ).toBe("work");
-    expect(frames).toHaveLength(1);
+    // The rejection and the streamClose that ends the exec.
+    expect(frames).toHaveLength(2);
     expect(executions).toHaveLength(0);
   });
 

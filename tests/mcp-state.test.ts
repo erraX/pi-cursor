@@ -158,7 +158,8 @@ function answerMcpState(
       () => {},
     ),
   ).toBe("work");
-  expect(frames).toHaveLength(1);
+  // The result and the streamClose that ends the exec.
+  expect(frames).toHaveLength(2);
   const frame = frames[0]!;
   expect(frame[0]).toBe(0);
   expect(Buffer.from(frame).readUInt32BE(1)).toBe(frame.length - 5);

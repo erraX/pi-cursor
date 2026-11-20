@@ -195,6 +195,24 @@ describe("native Cursor exec steering", () => {
     expect((closed!.message.value as ExecClientStreamClose).id).toBe(12);
   });
 
+  it("closes an exec after its result, as Cursor's own executor does", () => {
+    const frames: Uint8Array[] = [];
+    serverMessageInternals.handleExecMessageInner(
+      { id: 31, execId: "exec-31", message: { case: "reflectArgs", value: {} } } as never,
+      [],
+      (frame: Uint8Array) => frames.push(frame),
+      () => {},
+    );
+    const [result, closed] = frames.map((frame) =>
+      fromBinary(AgentClientMessageSchema, frame.subarray(5)),
+    );
+    expect(result!.message.case).toBe("execClientMessage");
+    expect(closed!.message.case).toBe("execClientControlMessage");
+    const control = closed!.message.value as ExecClientControlMessage;
+    expect(control.message.case).toBe("streamClose");
+    expect((control.message.value as ExecClientStreamClose).id).toBe(31);
+  });
+
   it("handles grind execution, reflection, VM setup, and truncated tool call execs with success results", () => {
     const cases = [
       ["startGrindExecutionArgs", "startGrindExecutionResult"],
@@ -214,7 +232,8 @@ describe("native Cursor exec steering", () => {
         },
       );
       expect(handled).toBe(true);
-      expect(frames).toHaveLength(1);
+      // The result and the streamClose that ends the exec.
+      expect(frames).toHaveLength(2);
       const answer = fromBinary(AgentClientMessageSchema, frames[0]!.subarray(5));
       expect(answer.message.case).toBe("execClientMessage");
       const execResult = answer.message.value as {
@@ -259,7 +278,8 @@ describe("native Cursor exec steering", () => {
       },
     );
     expect(handled).toBe(true);
-    expect(frames).toHaveLength(1);
+    // The result and the streamClose that ends the exec.
+    expect(frames).toHaveLength(2);
     const raw = Buffer.from(frames[0]!);
     expect(raw.includes(Buffer.from("do-not-log-PROMPT-9f3c"))).toBe(false);
     expect(raw.includes(Buffer.from("sk-test-secret"))).toBe(false);

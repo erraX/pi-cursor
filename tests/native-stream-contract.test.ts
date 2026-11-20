@@ -665,6 +665,15 @@ describe("native stream contract: Pi tool calls", () => {
     expect(replies).toHaveLength(1);
     expect(replies[0]!.id).toBe(EXEC_MSG_ID);
     expect(replies[0]!.execId).toBe(EXEC_ID);
+    // The result ends the exec: it is followed by a streamClose for the same exec id.
+    const sent = bridge.received();
+    const resultAt = sent.findIndex((message) => message.message.case === "execClientMessage");
+    const closed = sent[resultAt + 1]?.message;
+    expect(closed?.case).toBe("execClientControlMessage");
+    if (closed?.case === "execClientControlMessage") {
+      expect(closed.value.message.case).toBe("streamClose");
+      expect(closed.value.message.value?.id).toBe(EXEC_MSG_ID);
+    }
     const reply = replies[0]!.message;
     expect(reply.case).toBe("mcpResult");
     const result = reply.case === "mcpResult" ? reply.value.result : undefined;

@@ -109,7 +109,8 @@ describe("Pi-only local tool routing", () => {
       expect(onMcp).not.toHaveBeenCalled();
       expect(onWork).not.toHaveBeenCalled();
       expect(dispatch).not.toHaveBeenCalled();
-      expect(frames).toHaveLength(1);
+      // The rejection and the streamClose that ends the exec.
+      expect(frames).toHaveLength(2);
       const answer = fromBinary(AgentClientMessageSchema, frames[0]!.subarray(5));
       expect(answer).toMatchObject({
         message: {
@@ -232,7 +233,8 @@ describe("Pi-only local tool routing", () => {
       await Promise.all(work);
       expect(fetch).toHaveBeenCalledTimes(1);
       expect(onMcp).not.toHaveBeenCalled();
-      expect(frames).toHaveLength(1);
+      // The fetch result and the streamClose that ends the exec.
+      expect(frames).toHaveLength(2);
       expect(fromBinary(AgentClientMessageSchema, frames[0]!.subarray(5))).toMatchObject({
         message: {
           case: "execClientMessage",
@@ -423,7 +425,8 @@ describe("local tool rejection budget on the stream", () => {
       h.send(progressFrame({ case: "heartbeat", value: {} }));
     }
     expect(h.output.error).not.toHaveBeenCalled();
-    expect(h.bridge.write).toHaveBeenCalledTimes(12);
+    // Each rejection and the streamClose that ends its exec.
+    expect(h.bridge.write).toHaveBeenCalledTimes(24);
 
     h.send(checkpointFrame());
     h.send(execFrame("mcpArgs", { toolName: "mcp_pi_bash", toolCallId: "pi-1" }, 21));

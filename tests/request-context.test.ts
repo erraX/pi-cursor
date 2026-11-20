@@ -46,7 +46,8 @@ describe("requestContextArgs reply", () => {
         () => {},
       ),
     ).toBe("work");
-    expect(frames).toHaveLength(1);
+    // The result and the streamClose that ends the exec.
+    expect(frames).toHaveLength(2);
 
     const answer = fromBinary(AgentClientMessageSchema, frames[0]!.subarray(5));
     expect(answer.message.case).toBe("execClientMessage");
