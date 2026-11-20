@@ -30,7 +30,11 @@ import {
   registerSessionLifecycleCleanup,
 } from "./extension/debug-hooks.js";
 import { getStartupCursorAccessToken, isTokenNearExpiry } from "./extension/auth.js";
-import { createProviderManager, loadStartupCatalog } from "./extension/provider.js";
+import {
+  createProviderManager,
+  refreshCatalogFromNetwork,
+  resolveStartupCatalog,
+} from "./extension/provider.js";
 import { registerCursorCommands } from "./extension/commands.js";
 
 // ── Re-exports for public API, tests, and external scripts ──
@@ -146,22 +150,27 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     debugLogFile: isExtensionDebugEnabled() ? getExtensionDebugLogFilePath() : undefined,
   });
 
+  const setCurrentToken = (token: string, source: CredentialSource): void => {
+    currentToken = token;
+    currentTokenSource = source;
+    setLastTokenSource(source);
+  };
+
   const providerManager = createProviderManager(pi, {
     getAccessToken,
-    setCurrentToken: (token, source) => {
-      currentToken = token;
-      currentTokenSource = source;
-      setLastTokenSource(source);
-    },
+    setCurrentToken,
     onRegisteredModelsUpdated: (models) => {
       lastRegisteredModels = models;
     },
   });
 
-  // Activation must not block on the network. Register the last-known-good
-  // catalog (or the bundled fallback) synchronously; pi calls refreshModels in
-  // the background and updates an open /model selector with the live list.
-  const startupCatalog = loadStartupCatalog();
+  // Activation does not block on the network once a catalog has been cached: the
+  // last-known-good catalog is registered as is, and pi calls refreshModels in the
+  // background and updates an open /model selector with the live list. Only a run
+  // with no cached catalog waits for one bounded discovery (see resolveStartupCatalog).
+  const startupCatalog = await resolveStartupCatalog((signal) =>
+    refreshCatalogFromNetwork(setCurrentToken, { signal }),
+  );
   providerManager.registerModels(startupCatalog.rawModels, startupCatalog.parameterizedModels);
 
   registerCursorCommands(pi, {

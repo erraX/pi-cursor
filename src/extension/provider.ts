@@ -36,6 +36,8 @@ import { ProviderConstant, CredentialSource } from "../types/enums.js";
 
 export const STARTUP_CATALOG_FRESH_MS = 6 * 60 * 60 * 1000;
 export const BACKGROUND_CATALOG_REFRESH_TIMEOUT_MS = 20_000;
+/** How long activation may wait for discovery when no catalog has ever been cached. */
+export const FIRST_RUN_CATALOG_TIMEOUT_MS = 10_000;
 
 export interface ProviderRegistrationContext {
   getAccessToken: (options?: { forceRefresh?: boolean }) => Promise<string>;
@@ -59,6 +61,50 @@ export function loadStartupCatalog(): CursorCatalog {
     }
   }
   return { rawModels: FALLBACK_MODELS, parameterizedModels: [] };
+}
+
+/**
+ * The catalog to register at activation.
+ *
+ * With a cached catalog this never touches the network: the cache is registered as is and Pi
+ * refreshes it in the background. With none (a first run, a cleared cache, an isolated
+ * `PI_CURSOR_CACHE_DIR`) the bundled fallback list is all there is, and it holds none of the ids
+ * that only exist as parameters of a live catalog row. Pi then takes
+ * `--model cursor/grok-4.7-500k-max-mode-fast` for a custom id, the provider sends that id to
+ * Cursor verbatim, and Cursor answers `not_found`. A non-interactive run exits before a
+ * background refresh can write the cache, so the next run fails the same way.
+ *
+ * So a run without a cache waits once for discovery, bounded by `timeoutMs`. When discovery
+ * yields nothing (not logged in, offline, slow) the bundled list is registered as before.
+ */
+export async function resolveStartupCatalog(
+  discover: (signal: AbortSignal) => Promise<CursorCatalog | undefined>,
+  timeoutMs = FIRST_RUN_CATALOG_TIMEOUT_MS,
+): Promise<CursorCatalog> {
+  if (!process.env.PI_OFFLINE && !readCachedCatalog()) {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const discovered = await Promise.race([
+        discover(controller.signal),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => {
+            controller.abort();
+            resolve(undefined);
+          }, timeoutMs);
+        }),
+      ]);
+      debugExtensionLog("model_discovery.startup.first_run", { discovered: !!discovered });
+      if (discovered) return discovered;
+    } catch (err) {
+      debugExtensionLog("model_discovery.startup.first_run_failed", {
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return loadStartupCatalog();
 }
 
 export async function refreshCatalogFromNetwork(

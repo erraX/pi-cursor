@@ -1,12 +1,13 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import { unregisterApiProviders } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 
-import cursorExtension from "../src/index.js";
+import cursorExtension, { FALLBACK_MODELS } from "../src/index.js";
+import { resolveStartupCatalog } from "../src/extension/provider.js";
 
 import {
   isRefreshKnownBad,
@@ -173,5 +174,64 @@ describe("model catalog cache", () => {
 
     expect(models.length).toBeGreaterThan(0);
     expect(performance.now() - startedAt).toBeLessThan(250);
+  });
+
+  describe("catalog registered at activation", () => {
+    const live = { rawModels, parameterizedModels };
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("registers the cached catalog without discovering", async () => {
+      writeCachedCatalog({ tokenHash: "abc123", rawModels, parameterizedModels });
+      const discover = vi.fn(() => Promise.resolve(undefined));
+
+      const catalog = await resolveStartupCatalog(discover);
+
+      expect(discover).not.toHaveBeenCalled();
+      expect(catalog).toEqual(live);
+    });
+
+    it("waits for discovery when nothing is cached, so parameterized ids can be routed", async () => {
+      const discover = vi.fn(() => Promise.resolve(live));
+
+      const catalog = await resolveStartupCatalog(discover);
+
+      expect(discover).toHaveBeenCalledTimes(1);
+      expect(catalog).toBe(live);
+    });
+
+    it.each([
+      ["finds nothing", () => Promise.resolve(undefined)],
+      ["fails", () => Promise.reject(new Error("no route to host"))],
+    ])("registers the bundled list when discovery %s", async (_label, discover) => {
+      const catalog = await resolveStartupCatalog(discover);
+
+      expect(catalog).toEqual({ rawModels: FALLBACK_MODELS, parameterizedModels: [] });
+    });
+
+    it("gives up on a slow discovery, aborts it, and registers the bundled list", async () => {
+      let signal: AbortSignal | undefined;
+      const discover = vi.fn((discoverySignal: AbortSignal) => {
+        signal = discoverySignal;
+        return new Promise<undefined>(() => {});
+      });
+
+      const catalog = await resolveStartupCatalog(discover, 20);
+
+      expect(signal?.aborted).toBe(true);
+      expect(catalog.rawModels).toBe(FALLBACK_MODELS);
+    });
+
+    it("stays off the network when Pi is offline", async () => {
+      vi.stubEnv("PI_OFFLINE", "1");
+      const discover = vi.fn(() => Promise.resolve(live));
+
+      const catalog = await resolveStartupCatalog(discover);
+
+      expect(discover).not.toHaveBeenCalled();
+      expect(catalog.rawModels).toBe(FALLBACK_MODELS);
+    });
   });
 });
