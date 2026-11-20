@@ -56,6 +56,7 @@ import {
   type InteractionQuery,
   type KvServerMessage,
   type McpToolDefinition,
+  type TurnEndedUpdate,
 } from "../proto/agent_pb.js";
 import { frameConnectMessage } from "../client/bridge.js";
 import { debugLog, lifecycleLog } from "./debug-log.js";
@@ -81,7 +82,7 @@ import {
   type StreamProgress,
 } from "./tuning.js";
 import { conversationStates, markBlobMiss, trimBlobStore } from "./session-state.js";
-import type { PendingExec, StreamState } from "./types.js";
+import type { CursorRunUsage, PendingExec, StreamState } from "./types.js";
 import { setLastStreamEvent } from "../diagnostics/diagnostics.js";
 
 /**
@@ -164,6 +165,8 @@ export function processServerMessage(
       // Cursor closes the HTTP/2 connection right after this. Recorded so the close is
       // finalized as a completed turn instead of retried as a failure (upstream #3).
       state.turnEnded = true;
+      const counters = turnEndedUsage(update.message.value as TurnEndedUpdate);
+      if (counters) state.turnEndedUsage = counters;
       return "work";
     }
     // Remaining cases (heartbeat, toolCallStarted, partialToolCall, ...) are already
@@ -757,6 +760,22 @@ function describeUnknownFields(message: unknown): string {
   return unknown
     .map((field) => `${field.no}:wt${field.wireType}:${field.data?.byteLength ?? 0}b`)
     .join(",");
+}
+
+/**
+ * The run's token counters from `turnEnded`, in Pi's buckets, or undefined when Cursor sent none.
+ * `input_tokens` counts the whole prompt of every step, cache reads and writes included.
+ */
+function turnEndedUsage(update: TurnEndedUpdate): CursorRunUsage | undefined {
+  if (update.inputTokens === undefined || update.outputTokens === undefined) return undefined;
+  const cacheRead = Number(update.cacheReadTokens ?? 0n);
+  const cacheWrite = Number(update.cacheWriteTokens ?? 0n);
+  return {
+    input: Math.max(0, Number(update.inputTokens) - cacheRead - cacheWrite),
+    output: Number(update.outputTokens),
+    cacheRead,
+    cacheWrite,
+  };
 }
 
 /**

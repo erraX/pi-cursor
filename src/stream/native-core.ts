@@ -41,7 +41,11 @@ export type {
 
 import { processServerMessage } from "./server-messages.js";
 import { createThinkingTagFilter } from "./thinking-filter.js";
-import { contextToCursorChatCompletionRequest, resolveToolsForToolChoice } from "./pi-adapter.js";
+import {
+  contextToCursorChatCompletionRequest,
+  emptyCursorRunUsage,
+  resolveToolsForToolChoice,
+} from "./pi-adapter.js";
 import {
   commitStoredCheckpoint,
   commitStoredCheckpointMidPause,
@@ -198,6 +202,7 @@ import type {
   ClientTranscript,
   CursorNativeStreamConfig,
   CursorNativeStreamOptions,
+  CursorRunUsage,
   IdleRestartContext,
   NativeStreamAttemptInput,
   NativeStreamWriter,
@@ -792,6 +797,9 @@ function writeNativeStream(
   checkpointRef: CheckpointRef = { current: null },
   preservedMidPauseExecs: PendingExec[] = [],
   clientTranscript: ClientTranscript = liveTranscript(completedTurns),
+  // One per Cursor run, like the checkpoint cell: a stream resumed on the parked bridge passes
+  // the run's ledger on, so turnEnded settles against every message the run produced.
+  runUsage: CursorRunUsage = emptyCursorRunUsage(),
 ): void {
   const persistenceTurns = clientTranscript.completedTurns;
   debugLog("native.stream.start", {
@@ -819,6 +827,7 @@ function writeNativeStream(
     totalTokens: 0,
     previousContextTokens: conversationStates.get(convKey)?.lastContextTokens,
     turnEnded: false,
+    runUsage,
   };
   const tagFilter = createThinkingTagFilter();
   let mcpExecReceived = false;
@@ -1896,6 +1905,8 @@ function handleNativeToolResultResume(
     // snapshot so recovery can safely recreate that continuation.
     pendingExecs,
     resumeTranscript,
+    // Same run, so the same usage ledger.
+    pausedState.runUsage,
   );
 }
 

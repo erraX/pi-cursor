@@ -23,6 +23,7 @@ import type { CursorNativeModelRouting } from "./model-routing.js";
 import type {
   ChatCompletionRequest,
   ContentPart,
+  CursorRunUsage,
   CursorNativeStreamConfig,
   CursorNativeStreamOptions,
   OpenAIMessage,
@@ -53,16 +54,29 @@ export function applyCursorUsage(
 ): void {
   if (!state) return;
   const usage = computeUsage(state);
-  const { cacheRead, cacheWrite, input } = splitPromptTokensForCache(usage.prompt_tokens, state);
+  const estimate: CursorRunUsage = {
+    ...splitPromptTokensForCache(usage.prompt_tokens, state),
+    output: usage.completion_tokens,
+  };
+  const {
+    input,
+    output: outputTokens,
+    cacheRead,
+    cacheWrite,
+  } = state.turnEndedUsage
+    ? settleCursorRunUsage(state.turnEndedUsage, state.runUsage)
+    : recordCursorRunUsage(estimate, state.runUsage);
   const costInput = tokenCost(input, model.cost?.input);
-  const costOutput = tokenCost(usage.completion_tokens, model.cost?.output);
+  const costOutput = tokenCost(outputTokens, model.cost?.output);
   const costCacheRead = tokenCost(cacheRead, model.cost?.cacheRead);
   const costCacheWrite = tokenCost(cacheWrite, model.cost?.cacheWrite);
   output.usage = {
     input,
-    output: usage.completion_tokens,
+    output: outputTokens,
     cacheRead,
     cacheWrite,
+    // Not the sum of the buckets: Pi reads totalTokens as the size of the context (compaction),
+    // which the latest checkpoint reports, while a settled message bills a whole run.
     totalTokens: usage.total_tokens,
     cost: {
       input: costInput,
@@ -74,10 +88,60 @@ export function applyCursorUsage(
   };
 }
 
+export function emptyCursorRunUsage(): CursorRunUsage {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+}
+
+/** Bills a message of a run that has not ended yet by the estimate, and remembers the bill. */
+function recordCursorRunUsage(
+  estimate: CursorRunUsage,
+  reported: CursorRunUsage | undefined,
+): CursorRunUsage {
+  if (reported) {
+    reported.input += estimate.input;
+    reported.output += estimate.output;
+    reported.cacheRead += estimate.cacheRead;
+    reported.cacheWrite += estimate.cacheWrite;
+  }
+  return estimate;
+}
+
 /**
- * Cursor's streaming wire reports only a single running `usedTokens` total per
- * turn — there is no per-turn cache-read/write breakdown on the protocol (see
- * `TokenDeltaUpdate` / `ConversationTokenDetails` in agent.proto). Reporting
+ * Bills the message that ended a run: Cursor's counters for the run minus what the run's earlier
+ * messages were billed, so the run's messages add up to the counters.
+ *
+ * Buckets cannot go negative. Where an earlier estimate overshot one, the prompt total is still
+ * matched: fresh input and cache writes are billed what remains of them, and cache reads take the
+ * rest of the prompt. The usual overshoot is a step whose cached prompt the estimate billed as
+ * fresh input; that difference stays in input.
+ */
+function settleCursorRunUsage(
+  counters: CursorRunUsage,
+  reported: CursorRunUsage | undefined,
+): CursorRunUsage {
+  const earlier = reported ?? emptyCursorRunUsage();
+  const promptTotal = (usage: CursorRunUsage) => usage.input + usage.cacheRead + usage.cacheWrite;
+  const prompt = Math.max(0, promptTotal(counters) - promptTotal(earlier));
+  const input = Math.min(prompt, Math.max(0, counters.input - earlier.input));
+  const cacheWrite = Math.min(
+    prompt - input,
+    Math.max(0, counters.cacheWrite - earlier.cacheWrite),
+  );
+  const settled: CursorRunUsage = {
+    input,
+    output: Math.max(0, counters.output - earlier.output),
+    cacheRead: prompt - input - cacheWrite,
+    cacheWrite,
+  };
+  // The run is over; nothing is left to settle against it.
+  if (reported) Object.assign(reported, emptyCursorRunUsage());
+  return settled;
+}
+
+/**
+ * Until a run ends, Cursor's streaming wire reports only a single running
+ * `usedTokens` total — the cache-read/write breakdown arrives once, summed
+ * over the run, on `turnEnded` (see `settleCursorRunUsage`). Reporting
  * cacheRead/cacheWrite as flat 0 made every Cursor turn look like a full cache
  * miss to consumers that compare usage against prior context size, even
  * though Cursor's own dashboard shows these conversations are >90% cache hits.
