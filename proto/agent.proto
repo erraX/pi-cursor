@@ -537,6 +537,21 @@ message ConversationStateStructure {
   string client_name = 22;
   optional uint64 conversation_started_timestamp_ms = 26;
   optional string conversation_started_time_zone = 27;
+  // 33-49: names and types as in the Cursor CLI 2026.10.22 schema. Cursor sends 34, 38, 39 and
+  // 46 on today's checkpoints. The message-typed fields in this range (32, 40, 43, 44) stay
+  // undeclared; like any unknown field they are kept verbatim when a checkpoint is sent back.
+  optional bool is_root_project_conversation = 33;
+  repeated string completed_ask_question_tool_call_ids = 34;
+  repeated string durable_skill_blocks = 35;
+  optional string durable_custom_mode_id = 36;
+  optional uint32 message_count_at_last_compaction = 37;
+  repeated string recent_user_message_ids = 38;
+  optional uint32 recent_user_message_ids_older_turn_count = 39;
+  repeated string mentioned_agent_ids = 42;
+  repeated string voice_call_time_task_ids = 45;
+  bool writes_voice_call_utterances = 46;
+  optional bool voice_calls_read_utterances = 47;
+  optional string user_time_zone = 49;
 }
 
 message ThinkingDetails {
@@ -701,6 +716,8 @@ message InteractionUpdate {
     TurnEndedUpdate turn_ended = 14;
     StepStartedUpdate step_started = 16;
     StepCompletedUpdate step_completed = 17;
+    FeedbackRequestUpdate feedback_request = 21;
+    ToolRequestsListedUpdate tool_requests_listed = 27;
   }
   optional uint64 message_started_at_ms = 25;
 }
@@ -3183,6 +3200,23 @@ message Empty {
 
 message BidiRequestId {
   string request_id = 1;
+}
+
+// InteractionUpdate field 27, as in the Cursor CLI 2026.10.22 schema. Sent next to a step's
+// tool calls.
+message ToolRequestsListedUpdate {
+  uint32 call_count = 1;
+}
+
+// InteractionUpdate field 21: Cursor asks its own UI to show a feedback form. Fields 3
+// (categories) and 4 (category_groups) are messages and stay undeclared.
+message FeedbackRequestUpdate {
+  string request_id = 1;
+  optional string canonical_model_name = 2;
+  bool show_form_immediately = 5;
+  optional string title = 6;
+  optional string negative_title = 7;
+  optional string comment_placeholder = 8;
 }
 
 enum AppliedAgentChange_ChangeType {

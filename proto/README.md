@@ -31,6 +31,26 @@ Cursor can change the agent schema at any time. There are two ways to pick that 
    in its output, so the generated file carries the whole schema losslessly.
    `scripts/proto-descriptor.ts` decodes it and prints proto3 source.
 
+## Naming one unknown field
+
+The lifecycle log and `/cursor.doctor` report drift as `<message>.payload#<field numbers>`, for
+example `conversationCheckpointUpdate.payload#38,39,46`. When only a few fields are missing, an
+installed Cursor CLI is enough to name them. Its bundle
+(`~/.local/share/cursor-agent/versions/<version>/index.js`) lists every message in a compact
+form:
+
+```text
+"ConversationStateStructure|1 root_prompt_messages_json 12*|...|38 recent_user_message_ids 9*|39 recent_user_message_ids_older_turn_count 13?|..."
+```
+
+Each entry is `<number> <name> <type>`. The type is the protobuf scalar type number (`4` uint64,
+`8` bool, `9` string, `12` bytes, `13` uint32) or `#n`, a reference to another message; `*`
+marks repeated, `?` optional, and a trailing word names the oneof. Add the field to
+`agent.proto` under the same number and run `yarn proto:gen`. Append new messages after the
+last existing one, so the generated file changes only where the schema did.
+
+A field number the CLI does not list either means the server is ahead of that CLI build.
+
 ## Scope of the printer
 
 `scripts/proto-descriptor.ts` handles the subset this schema uses: messages, nested
