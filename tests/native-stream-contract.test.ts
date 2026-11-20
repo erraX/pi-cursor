@@ -1100,6 +1100,147 @@ describe("native stream contract: tool continuation after the bridge is lost", (
   });
 });
 
+describe("native stream contract: the turn after a recovered tool call", () => {
+  const FOLLOW_UP = "Which file did you read?";
+
+  /**
+   * Lets the recovered stream finish with a checkpoint, then sends Pi's next turn. Pi replays its
+   * own turn (question, tool call, result, answer), never the synthetic one recovery sent upstream.
+   */
+  async function expectNextTurnKeepsCheckpoint(
+    resumed: AssistantMessageEventStream,
+    recovery: FakeBridge,
+    history: Message[],
+  ) {
+    const recoveredConversation = runRequests(recovery)[0]!.conversationId;
+    recovery.send(cursor.text("README describes the Pi provider."), cursor.checkpoint());
+    recovery.send(cursor.turnEnded());
+    recovery.finishStream();
+    const { message: answer } = await outcome(resumed);
+    expect(answer.stopReason).toBe("stop");
+
+    const next = streamPi(context(...history, answer, user(FOLLOW_UP)));
+    await settle();
+    const nextRun = runRequests(recovery).at(-1)!;
+    expect(userText(nextRun)).toBe(FOLLOW_UP);
+    expect(nextRun.conversationId, "the Cursor conversation carries on").toBe(
+      recoveredConversation,
+    );
+    expect(nextRun.conversationState?.readPaths, "Cursor's checkpoint state carries on").toContain(
+      CHECKPOINT_MARKER,
+    );
+    const { message } = await finishWithText(recovery, next);
+    expect(message.stopReason).toBe("stop");
+  }
+
+  it.each([
+    [
+      "from Cursor's checkpoint after a terminal error while parked",
+      async () => {
+        const { bridge, toolUse } = await pauseOnReadTool();
+        bridge.send(cursor.checkpoint());
+        bridge.failStream("invalid_argument", "request rejected");
+        await settle();
+        return { toolUse, resumed: streamReadResult(toolUse) };
+      },
+    ],
+    [
+      "by rebuilding the turn after a GOAWAY while parked",
+      async () => {
+        const { bridge, toolUse } = await pauseOnReadTool();
+        bridge.goaway();
+        await settle();
+        return { toolUse, resumed: streamReadResult(toolUse) };
+      },
+    ],
+    [
+      "from Cursor's checkpoint after a GOAWAY once the result was sent",
+      async () => {
+        const { bridge, toolUse } = await pauseOnReadTool();
+        bridge.send(cursor.checkpoint());
+        const resumed = streamReadResult(toolUse);
+        await settle();
+        bridge.goaway();
+        return { toolUse, resumed };
+      },
+    ],
+    [
+      "by rebuilding the turn after a GOAWAY once the result was sent",
+      async () => {
+        const { bridge, toolUse } = await pauseOnReadTool();
+        const resumed = streamReadResult(toolUse);
+        await settle();
+        bridge.goaway();
+        return { toolUse, resumed };
+      },
+    ],
+  ])("keeps the checkpoint of an answer recovered %s", async (_label, recover) => {
+    const { toolUse, resumed } = await recover();
+    const recovery = await spawned(1);
+
+    await expectNextTurnKeepsCheckpoint(resumed, recovery, [
+      user(PROMPT),
+      toolUse,
+      readResult(README),
+    ]);
+    expect(bridges, "the next turn reuses the recovery bridge").toHaveLength(2);
+  });
+
+  it("keeps the checkpoint when the recovered answer called another tool first", async () => {
+    const { bridge, toolUse } = await pauseOnReadTool();
+    bridge.send(cursor.checkpoint());
+    bridge.failStream("invalid_argument", "request rejected");
+    await settle();
+    const recovered = streamReadResult(toolUse);
+    const recovery = await spawned(1);
+    recovery.send(cursor.checkpoint(), cursor.readFile("AGENTS.md", "call-read-2"));
+    const { message: secondToolUse } = await outcome(recovered);
+    expect(secondToolUse.stopReason).toBe("toolUse");
+
+    const history = [
+      user(PROMPT),
+      toolUse,
+      readResult(README),
+      secondToolUse,
+      readResult("# AGENTS.md", "call-read-2"),
+    ];
+    const resumed = streamPi(context(...history));
+    await settle();
+    expect(execReplies(recovery), "the second result goes to the live bridge").toHaveLength(1);
+
+    await expectNextTurnKeepsCheckpoint(resumed, recovery, history);
+  });
+
+  it("keeps the checkpoint when the recovered answer is interrupted and continued", async () => {
+    const { bridge, toolUse } = await pauseOnReadTool();
+    bridge.send(cursor.checkpoint());
+    bridge.failStream("invalid_argument", "request rejected");
+    await settle();
+    const resumed = streamReadResult(toolUse);
+    const recovery = await spawned(1);
+    recovery.send(cursor.checkpoint(), cursor.text("README describes"));
+    recovery.goaway();
+
+    const continuation = await spawned(2);
+    expect(userText(onlyRunRequest(continuation))).toBe(CHECKPOINT_CONTINUATION_PROMPT);
+    continuation.send(cursor.text(" the Pi provider."), cursor.checkpoint(), cursor.turnEnded());
+    continuation.finishStream();
+    const { message: answer } = await outcome(resumed);
+    expect(textOf(answer)).toBe("README describes the Pi provider.");
+
+    const next = streamPi(
+      context(user(PROMPT), toolUse, readResult(README), answer, user(FOLLOW_UP)),
+    );
+    await settle();
+    const nextRun = runRequests(continuation).at(-1)!;
+    expect(userText(nextRun)).toBe(FOLLOW_UP);
+    expect(nextRun.conversationId).toBe(onlyRunRequest(recovery).conversationId);
+    expect(nextRun.conversationState?.readPaths).toContain(CHECKPOINT_MARKER);
+    const { message } = await finishWithText(continuation, next);
+    expect(message.stopReason).toBe("stop");
+  });
+});
+
 describe("native stream contract: idle watchdog", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

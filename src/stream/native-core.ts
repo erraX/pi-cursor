@@ -158,7 +158,13 @@ export {
 import { debugLog, emitMetric, lifecycleLog, nextDebugRequestId } from "./debug-log.js";
 import { cloneParsedImage } from "./images.js";
 import { resolveRequestedModelId } from "./model-routing.js";
-import { liveTranscript, withSyntheticCurrentTurn } from "./client-transcript.js";
+import {
+  clientInFlightTurn,
+  liveTranscript,
+  recoveredTranscript,
+  withSyntheticCurrentTurn,
+  withToolResults,
+} from "./client-transcript.js";
 import {
   planRecovery as planRecoveryImpl,
   collapseToolResultsById,
@@ -544,6 +550,16 @@ async function handleCursorNativeRequest(
         completedTurns: turns,
         requestTurns,
         currentTurn: recoveredCurrentTurn,
+        // The recovered turn is synthetic. The checkpoint this stream leaves is recorded against
+        // Pi's own turn, so that Pi's next request still matches it.
+        ...(inFlightTurn
+          ? {
+              clientTranscript: recoveredTranscript(
+                turns,
+                withToolResults(inFlightTurn, toolResults),
+              ),
+            }
+          : {}),
         writer,
         options,
         requestId,
@@ -599,6 +615,10 @@ async function handleCursorNativeRequest(
         convKey,
         completedTurns: rebuiltCompletedTurns,
         currentTurn: recoveredCurrentTurn,
+        clientTranscript: recoveredTranscript(
+          decision.completedTurns,
+          withToolResults(decision.inFlightTurn, decision.toolResults),
+        ),
         writer,
         options,
         requestId,
@@ -1102,8 +1122,8 @@ function writeNativeStream(
           stored,
           checkpointRef.current,
           blobStore,
-          completedTurns,
-          currentTurn,
+          persistenceTurns,
+          clientInFlightTurn(clientTranscript, currentTurn),
           convKey,
         );
         debugLog("native.stream.checkpoint_committed", { requestId, convKey, stored });
@@ -1510,8 +1530,8 @@ function writeNativeStream(
             stored,
             checkpointRef.current,
             blobStore,
-            completedTurns,
-            currentTurn,
+            persistenceTurns,
+            clientInFlightTurn(clientTranscript, currentTurn),
             convKey,
           );
           debugLog("native.stream.checkpoint_committed", { requestId, convKey, stored });
@@ -1578,10 +1598,15 @@ function handleNativeToolResultResume(
     clientTranscript: parkedTranscript,
   } = active;
   const resumeTranscript = parkedTranscript ?? liveTranscript(completedTurns);
-  const recoveredClientTranscript = withSyntheticCurrentTurn(
-    resumeTranscript,
-    ctx.inFlightTurn ?? currentTurn,
-  );
+  // Pi's view of the turn, should this stream need recovery: the in-flight turn of this very
+  // request with the results it carries. That holds after an earlier recovery too, where the
+  // parked transcript only knows the tool calls made before it.
+  const recoveredClientTranscript = ctx.inFlightTurn
+    ? recoveredTranscript(
+        resumeTranscript.completedTurns,
+        withToolResults(ctx.inFlightTurn, toolResults),
+      )
+    : withSyntheticCurrentTurn(resumeTranscript, currentTurn);
   const resumeIdleTimeoutMs = resolveResumeIdleTimeoutMs(
     process.env.PI_CURSOR_RESUME_IDLE_TIMEOUT_MS,
   );
