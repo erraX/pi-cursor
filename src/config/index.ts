@@ -7,7 +7,11 @@ import { join as pathJoin } from "node:path";
 import { assertSafeCursorBaseUrl } from "../utils/security.js";
 
 export const DEFAULT_CURSOR_AGENT_URL = "https://agentn.us.api5.cursor.sh";
-export const DEFAULT_CURSOR_CLIENT_VERSION = "cli-2026.07.23-e383d2b";
+/**
+ * The Cursor CLI build this client announces. Cursor gates protocol features on it, so it follows
+ * the build `proto/agent.proto` was last synced from; raise both together, after a live check.
+ */
+export const DEFAULT_CURSOR_CLIENT_VERSION = "cli-2026.10.22-27dcf5f";
 
 let cachedCursorAgentUrl: string | undefined;
 

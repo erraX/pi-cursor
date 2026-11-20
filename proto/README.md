@@ -31,6 +31,11 @@ Cursor can change the agent schema at any time. There are two ways to pick that 
    in its output, so the generated file carries the whole schema losslessly.
    `scripts/proto-descriptor.ts` decodes it and prints proto3 source.
 
+The client announces a Cursor CLI build in `x-cursor-client-version`
+(`DEFAULT_CURSOR_CLIENT_VERSION` in `src/config/index.ts`), and Cursor gates protocol features
+on it. Keep it at the build the schema was synced from, and raise it only after a live run
+(`yarn smoke:stream`, a Pi tool call) shows no new drift.
+
 ## Naming one unknown field
 
 The lifecycle log and `/cursor.doctor` report drift as `<message>.payload#<field numbers>`, for
