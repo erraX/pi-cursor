@@ -39,7 +39,7 @@ export type {
   CursorParameterizedVariant,
 } from "../client/cursor-wire.js";
 
-import { processServerMessage } from "./server-messages.js";
+import { execStreamCloseFrame, processServerMessage } from "./server-messages.js";
 import { createThinkingTagFilter } from "./thinking-filter.js";
 import {
   contextToCursorChatCompletionRequest,
@@ -1712,6 +1712,8 @@ function handleNativeToolResultResume(
       message: { case: "execClientMessage", value: execClientMessage },
     });
     bridge.write(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
+    // The result is the exec's last message; close it, as Cursor's own executor does.
+    bridge.write(execStreamCloseFrame(exec.execMsgId));
     debugLog("native.tool_resume.sent_result", {
       requestId,
       exec,
