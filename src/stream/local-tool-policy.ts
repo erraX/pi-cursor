@@ -78,6 +78,42 @@ const LOCAL_TOOL_HINTS: Record<string, string[]> = {
   writeShellStdinArgs: ["bash"],
 };
 
+/**
+ * Header Cursor's agent server reads to limit a run's built-in toolset, as the Cursor CLI sends
+ * it for `--allowed-tools`: `ToolCall` oneof field names, comma-joined. Its counterpart for
+ * `--exclude-tools` (`x-cursor-agent-exclude-tools`) is not honored on this client's runs: live,
+ * the model still listed Shell, Read, Grep and Glob with it set, and none with this one.
+ */
+export const CURSOR_ALLOWED_TOOLS_HEADER = "x-cursor-agent-allowed-tools";
+
+/**
+ * The built-in tools this provider can serve. Pi tools are MCP tools, reached through
+ * CallDynamicTool (`mcp_tool_call`) after GetDynamicTools (`get_mcp_tools_tool_call`); fetch is
+ * answered on the stream and web search is approved. Everything else, local file and shell
+ * operations above all, would only be rejected, so the model never sees it and cannot spend a
+ * step on a refused call.
+ */
+export const ALLOWED_CURSOR_TOOLS = [
+  "mcp_tool_call",
+  "get_mcp_tools_tool_call",
+  "fetch_tool_call",
+  "web_fetch_tool_call",
+  "web_search_tool_call",
+] as const;
+
+/** `PI_CURSOR_NATIVE_TOOLS=1` keeps Cursor's full built-in toolset in the run (rejected on use). */
+export function isNativeToolsetEnabled(envValue = process.env.PI_CURSOR_NATIVE_TOOLS): boolean {
+  const raw = envValue?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
+}
+
+/** Request headers for an `AgentService/Run` stream. */
+export function cursorRunHeaders(): Record<string, string> {
+  return isNativeToolsetEnabled()
+    ? {}
+    : { [CURSOR_ALLOWED_TOOLS_HEADER]: ALLOWED_CURSOR_TOOLS.join(",") };
+}
+
 /** Identifies native file and shell requests that must be rejected in favor of Pi tools. */
 export function isLocalToolExec(execCase: string): boolean {
   return Object.hasOwn(LOCAL_TOOL_HINTS, execCase);

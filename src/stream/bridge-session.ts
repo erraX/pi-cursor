@@ -24,6 +24,7 @@ import {
 } from "../client/bridge.js";
 import { getCursorAgentUrl } from "./config.js";
 import { debugLog } from "./debug-log.js";
+import { cursorRunHeaders } from "./local-tool-policy.js";
 import {
   ACTIVE_BRIDGE_TTL_MS,
   resolveH2ConnectTimeoutMs,
@@ -163,6 +164,7 @@ export function startBridge(
       persistent: true,
       connectTimeoutMs: resolveH2ConnectTimeoutMs(process.env.PI_CURSOR_H2_CONNECT_TIMEOUT_MS),
       idleTimeoutMs: resolveH2IdleTimeoutMs(process.env.PI_CURSOR_H2_IDLE_TIMEOUT_MS),
+      headers: cursorRunHeaders(),
     });
     debugLog("bridge.start_run", { requestBytes });
     bridge.write(frameConnectMessage(requestBytes));
