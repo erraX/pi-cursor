@@ -64,9 +64,11 @@ import { handleInteractionQuery } from "./interaction-query.js";
 import { decodeMcpArgsMap } from "./request-build.js";
 import {
   availableToolNamesFor,
+  closeLocalToolRejectionStep,
   isLocalToolExec,
   localToolCandidates,
   nativeToolRejectReason,
+  recordLocalToolRejection,
   wireMcpToolDefinitions,
 } from "./local-tool-policy.js";
 import { cursorMcpToolNames } from "./root-prompt.js";
@@ -182,10 +184,11 @@ export function processServerMessage(
     const execCase = (execMsg as { message?: { case?: string } }).message?.case;
     const handled = handleExecMessage(execMsg, mcpTools, sendFrame, onMcpExec, onLocalWork);
     if (execCase && isLocalToolExec(execCase)) {
-      state.localToolRejections = (state.localToolRejections ?? 0) + 1;
+      recordLocalToolRejection(state);
       lifecycleLog("local_tool_rejected", {
         execCase,
         count: state.localToolRejections,
+        steps: state.localToolRejectionSteps,
         candidates: localToolCandidates(execCase, mcpTools),
       });
     }
@@ -245,6 +248,9 @@ export function processServerMessage(
   }
   if (msgCase === "conversationCheckpointUpdate") {
     const stateStructure = msg.message.value as ConversationStateStructure;
+    // Cursor checkpoints once a model step's tool results are in. Native calls rejected after
+    // this point were issued by a model that had already been shown the earlier rejections.
+    closeLocalToolRejectionStep(state);
     if ((stateStructure as any).tokenDetails) {
       const used = (stateStructure as any).tokenDetails.usedTokens;
       state.totalTokens = used;

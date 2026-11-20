@@ -58,6 +58,16 @@ function execFrame(caseName: string, args: object = {}, id = 12) {
   return serverFrame({ case: "execServerMessage", value: exec(caseName, args, id) });
 }
 
+/** The checkpoint Cursor sends once a model step's tool results are in. */
+function checkpointFrame() {
+  return serverFrame({ case: "conversationCheckpointUpdate", value: {} });
+}
+
+/** One model step that ends in a rejected native call: the call, then Cursor's checkpoint. */
+function rejectedStep(caseName = "grepArgs", id = 12) {
+  return Buffer.concat([execFrame(caseName, {}, id), checkpointFrame()]);
+}
+
 /** Frames text or heartbeat progress to check that neither resets the rejection budget. */
 function progressFrame(
   message: { case: "textDelta"; value: { text: string } } | { case: "heartbeat"; value: object },
@@ -338,11 +348,11 @@ function harness(retry?: StreamIdleRetryController) {
 }
 
 describe("local tool rejection budget on the stream", () => {
-  it("stops after eight mixed rejections despite text and heartbeat progress, without retrying", () => {
+  it("stops after eight rejected steps despite text and heartbeat progress, without retrying", () => {
     const retry = { currentAttempt: 1, maxRetries: 3, restart: vi.fn(() => true) };
     const h = harness(retry);
     for (let i = 0; i < 8; i++) {
-      h.send(execFrame(i % 2 ? "readArgs" : "grepArgs", {}, i));
+      h.send(rejectedStep(i % 2 ? "readArgs" : "grepArgs", i));
       if (i < 7) {
         h.send(progressFrame({ case: "textDelta", value: { text: "retry" } }));
         h.send(progressFrame({ case: "heartbeat", value: {} }));
@@ -351,7 +361,7 @@ describe("local tool rejection budget on the stream", () => {
     }
     expect(h.output.error).toHaveBeenCalledTimes(1);
     expect(h.output.error.mock.calls[0]).toEqual(
-      expect.arrayContaining([expect.stringContaining("8 requests")]),
+      expect.arrayContaining([expect.stringContaining("8 requests over 8 model steps")]),
     );
     expect(h.bridge.end).toHaveBeenCalledTimes(1);
     h.close();
@@ -360,16 +370,60 @@ describe("local tool rejection budget on the stream", () => {
     expect(h.output.error).toHaveBeenCalledTimes(1);
   });
 
+  it("counts a parallel batch of native calls as one step", () => {
+    const h = harness();
+    // Cursor runs each call of a batch as it streams in, with generation progress in between
+    // and no checkpoint until the whole step is answered.
+    for (let i = 0; i < 12; i++) {
+      h.send(execFrame("shellStreamArgs", {}, i));
+      h.send(progressFrame({ case: "heartbeat", value: {} }));
+    }
+    expect(h.output.error).not.toHaveBeenCalled();
+    expect(h.bridge.write).toHaveBeenCalledTimes(12);
+
+    h.send(checkpointFrame());
+    h.send(execFrame("mcpArgs", { toolName: "mcp_pi_bash", toolCallId: "pi-1" }, 21));
+    expect(h.output.error).not.toHaveBeenCalled();
+    expect(h.output.toolCall).toHaveBeenCalledTimes(1);
+    expect(activeBridges.get("local-policy")!.state).toMatchObject({
+      localToolRejections: 12,
+      localToolRejectionSteps: 1,
+    });
+  });
+
+  it("still stops a model that answers every rejected batch with another one", () => {
+    const h = harness();
+    for (let step = 0; step < 8; step++) {
+      expect(h.output.error).not.toHaveBeenCalled();
+      h.send(Buffer.concat([execFrame("readArgs"), execFrame("grepArgs"), execFrame("shellArgs")]));
+      h.send(checkpointFrame());
+    }
+    expect(h.output.error.mock.calls[0]).toEqual(
+      expect.arrayContaining([expect.stringContaining("24 requests over 8 model steps")]),
+    );
+  });
+
+  it("stops at the call ceiling when Cursor never checkpoints between steps", () => {
+    const h = harness();
+    for (let i = 0; i < 63; i++) h.send(execFrame("grepArgs", {}, i));
+    expect(h.output.error).not.toHaveBeenCalled();
+    h.send(execFrame("grepArgs", {}, 63));
+    expect(h.output.error.mock.calls[0]).toEqual(
+      expect.arrayContaining([expect.stringContaining("64 requests over 1 model step ")]),
+    );
+  });
+
   it("preserves the budget across transport attempts", () => {
     const retry = {
       currentAttempt: 1,
       maxRetries: 3,
       restart: vi.fn(() => true),
       localToolRejections: 0,
+      localToolRejectionSteps: 0,
     };
     const first = harness(retry);
-    for (let i = 0; i < 7; i++) first.send(execFrame("grepArgs"));
-    expect(retry.localToolRejections).toBe(7);
+    for (let i = 0; i < 7; i++) first.send(rejectedStep());
+    expect(retry).toMatchObject({ localToolRejections: 7, localToolRejectionSteps: 7 });
     first.controller.abort();
     const next = harness(retry);
     next.send(execFrame("readArgs"));
@@ -378,7 +432,7 @@ describe("local tool rejection budget on the stream", () => {
 
   it("does not let an unknown MCP tool reset the budget", () => {
     const h = harness();
-    for (let i = 0; i < 7; i++) h.send(execFrame("grepArgs"));
+    for (let i = 0; i < 7; i++) h.send(rejectedStep());
     h.send(execFrame("mcpArgs", { toolName: "missing", toolCallId: "missing" }));
     expect(h.output.toolCall).not.toHaveBeenCalled();
     h.send(execFrame("grepArgs"));
@@ -387,7 +441,7 @@ describe("local tool rejection budget on the stream", () => {
 
   it("starts a new user turn with a fresh budget after cancellation", () => {
     const first = harness();
-    for (let i = 0; i < 7; i++) first.send(execFrame("grepArgs"));
+    for (let i = 0; i < 7; i++) first.send(rejectedStep());
     first.controller.abort();
     expect(first.bridge.end).toHaveBeenCalledTimes(1);
     const next = harness();
@@ -397,7 +451,7 @@ describe("local tool rejection budget on the stream", () => {
 
   it("does not revive a stopped run for a Pi call arriving in a later chunk", () => {
     const h = harness();
-    h.send(Buffer.concat(Array.from({ length: 8 }, () => execFrame("grepArgs"))));
+    h.send(Buffer.concat(Array.from({ length: 8 }, () => rejectedStep())));
     expect(h.output.error).toHaveBeenCalledTimes(1);
     h.send(execFrame("mcpArgs", { toolName: "bash", toolCallId: "late" }));
     expect(h.output.toolCall).not.toHaveBeenCalled();
@@ -408,7 +462,7 @@ describe("local tool rejection budget on the stream", () => {
     const h = harness();
     h.send(
       Buffer.concat([
-        ...Array.from({ length: 8 }, () => execFrame("grepArgs")),
+        ...Array.from({ length: 8 }, () => rejectedStep()),
         execFrame("mcpArgs", { toolName: "mcp_pi_bash", toolCallId: "pi-1" }, 21),
         execFrame("mcpArgs", { toolName: "grep", toolCallId: "pi-2" }, 22),
       ]),
@@ -465,7 +519,7 @@ describe("local tool rejection budget on the stream", () => {
     ).toHaveLength(2);
     h.send(progressFrame({ case: "textDelta", value: { text: "Found both files." } }));
     expect(resumed.text).toHaveBeenCalledWith("Found both files.");
-    for (let i = 0; i < 7; i++) h.send(execFrame("grepArgs"));
+    for (let i = 0; i < 7; i++) h.send(rejectedStep());
     expect(resumed.error).not.toHaveBeenCalled();
     h.send(execFrame("grepArgs"));
     expect(resumed.error).toHaveBeenCalledTimes(1);
