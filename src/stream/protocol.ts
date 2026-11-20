@@ -1,6 +1,7 @@
 /**
  * Protocol-drift helpers: auth error detection, decode error framing, client version.
  */
+import type { CursorErrorDetail } from "../client/bridge.js";
 import { getCursorClientVersion } from "./config.js";
 import { formatDriftSummary, hasStrandingDrift } from "./drift.js";
 
@@ -51,21 +52,50 @@ export function appendDriftDiagnostic(message: string): string {
 const TRANSIENT_CONNECT_RE =
   /\b(Connect error (?:internal|unavailable|deadline_exceeded)|GOAWAY)\b/i;
 
-export function enhanceCursorStreamError(message: string): string {
+/** Cursor's own explanation of a failure as a bracketed note; empty when it sent none. */
+export function formatCursorErrorDetail(detail: CursorErrorDetail | undefined): string {
+  if (!detail) return "";
+  const said = [detail.title, detail.detail].filter(Boolean).join(": ");
+  const facts = [
+    detail.errorCode,
+    detail.providerStatusCode
+      ? `the model provider answered Cursor with HTTP ${detail.providerStatusCode}`
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join("; ");
+  if (!said) return facts ? `[cursor: ${facts}]` : "";
+  return `[cursor: ${said}${facts ? ` (${facts})` : ""}]`;
+}
+
+/**
+ * Adds the hints a failed stream deserves. `message` alone decides which: Cursor's detail text is
+ * free-form (a provider status of 401 is not an expired Pi token), so it is appended, never
+ * matched.
+ */
+export function enhanceCursorStreamError(message: string, detail?: CursorErrorDetail): string {
+  const explained = formatCursorErrorDetail(detail);
+  const stated = explained ? `${message} ${explained}` : message;
   if (isAuthErrorMessage(message)) {
     return (
-      `${message} ` +
+      `${stated} ` +
       `[auth-hint: token may be expired. Idle stream retries force-refresh credentials; ` +
       `if this persists run /login cursor or check /cursor.doctor tokenSource.]`
     );
   }
   if (isProtocolMismatchMessage(message)) {
-    return appendDriftDiagnostic(formatProtocolMismatchHint(message));
+    return appendDriftDiagnostic(formatProtocolMismatchHint(stated));
   }
   // Informational unknown fields accumulate on long sessions. Stapling them onto a
   // Connect `internal` abort made a transport retry look like a schema mismatch.
   if (TRANSIENT_CONNECT_RE.test(message)) {
-    return message;
+    return stated;
   }
-  return appendDriftDiagnostic(message);
+  // Cursor named the cause, so a note that the schema lags behind explains nothing: unknown
+  // fields are seen on every session, and stapled onto `resource_exhausted` they made a provider
+  // outage read as a wire mismatch. Drift that can strand a turn is still worth reporting.
+  if (explained && !hasStrandingDrift()) {
+    return stated;
+  }
+  return appendDriftDiagnostic(stated);
 }

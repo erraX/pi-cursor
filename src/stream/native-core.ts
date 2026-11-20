@@ -27,6 +27,7 @@ import {
 import {
   createConnectFrameParser,
   frameConnectMessage,
+  cursorErrorDetailOf,
   parseConnectEndStream,
   type BridgeHandle,
   type ConnectFrameDesyncDiagnostics,
@@ -165,7 +166,11 @@ import {
   type RecoveryDecision,
   type PlanRecoveryInput,
 } from "./recovery.js";
-import { enhanceCursorStreamError, isAuthErrorMessage } from "./protocol.js";
+import {
+  enhanceCursorStreamError,
+  formatCursorErrorDetail,
+  isAuthErrorMessage,
+} from "./protocol.js";
 import {
   setLastIdleTimeout,
   setLastRecoverySkipReason,
@@ -795,6 +800,8 @@ function writeNativeStream(
   let streamError: Error | null = null;
   /** Set when a Cursor end-stream error is being retried through the `onClose` path. */
   let retriableEndError: string | null = null;
+  /** Cursor's explanation of that error, for the message shown if the retries run out. */
+  let retriableEndErrorDetail = "";
   let emittedUserVisibleContent = false;
   // Only execs the client was actually told about may be recorded as pending: recovery matches the
   // snapshot against the tool results the client sends back, and it can only send back what it saw.
@@ -1226,11 +1233,13 @@ function writeNativeStream(
           return;
         }
         streamError = endError;
-        const enhanced = enhanceCursorStreamError(endError.message);
+        const cursorDetail = cursorErrorDetailOf(endError);
+        const enhanced = enhanceCursorStreamError(endError.message, cursorDetail);
         debugLog("native.stream.cursor_error", {
           requestId,
           modelId,
           message: endError.message,
+          cursorDetail,
           enhanced,
           isAuthError: isAuthErrorMessage(endError.message),
           deferredToToolPause: pauseRequested,
@@ -1263,6 +1272,7 @@ function writeNativeStream(
           });
         if (recoverable) {
           retriableEndError = endError.message;
+          retriableEndErrorDetail = formatCursorErrorDetail(cursorDetail);
           debugLog("native.stream.cursor_error_retriable", {
             requestId,
             failureKind: endFailure.kind,
@@ -1446,7 +1456,11 @@ function writeNativeStream(
         }
       }
       if (mcpExecReceived) saveMidPauseState({ code, failureKind: failure.kind });
-      writer.error(formatTransportFailure(failure), "error", state);
+      writer.error(
+        [formatTransportFailure(failure), retriableEndErrorDetail].filter(Boolean).join(" "),
+        "error",
+        state,
+      );
       removeActiveBridge(bridgeKey);
       return;
     }
