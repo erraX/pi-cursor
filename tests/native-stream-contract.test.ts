@@ -674,11 +674,20 @@ describe("native stream contract: transport loss and retries", () => {
     expect(bridges, "one first attempt plus two retries").toHaveLength(3);
   });
 
-  it("retries a rate-limited turn once, replaying the same request", async () => {
-    const stream = streamPi(context(user(PROMPT)));
+  it("retries a rate-limited turn once, on a new Cursor conversation", async () => {
+    const stream = streamPi(context(userWithImage(PROMPT)));
     const first = await spawned(0);
     first.failStream("resource_exhausted", "rate limit exceeded");
     const second = await spawned(1);
+    const retried = onlyRunRequest(second);
+    expect(userText(retried), "the retry asks the same question").toBe(PROMPT);
+    expect(userImages(retried)).toEqual([{ mimeType: "image/png", data: SCREENSHOT }]);
+    expect(
+      retried.conversationId,
+      "Cursor can pin a rate limit to one conversation, so the retry leaves it",
+    ).not.toBe(onlyRunRequest(first).conversationId);
+    expectReferencedBlobsServed(second, retried);
+
     second.failStream("resource_exhausted", "rate limit exceeded");
     const { message } = await outcome(stream);
 
@@ -686,7 +695,36 @@ describe("native stream contract: transport loss and retries", () => {
     expect(message.errorMessage).toMatch(/resource_exhausted/);
     await settle();
     expect(bridges, "rate limits get a single retry").toHaveLength(2);
-    expect(onlyRunRequest(second).conversationId).toBe(onlyRunRequest(first).conversationId);
+  });
+
+  it("keeps the conversation a rate-limit retry moved to for the turns that follow", async () => {
+    const stream = streamPi(context(user(PROMPT)));
+    const first = await spawned(0);
+    first.send(cursor.checkpoint());
+    first.failStream("resource_exhausted", "rate limit exceeded");
+    const second = await spawned(1);
+    const retried = onlyRunRequest(second);
+    expect(userText(retried)).toBe(PROMPT);
+    expect(
+      retried.conversationState?.readPaths,
+      "the refused conversation's checkpoint stays behind",
+    ).not.toContain(CHECKPOINT_MARKER);
+    second.send(cursor.text("README describes the Pi provider."), cursor.checkpoint());
+    second.send(cursor.turnEnded());
+    second.finishStream();
+    const { message: answer } = await outcome(stream);
+    expect(answer.stopReason).toBe("stop");
+
+    const next = streamPi(context(user(PROMPT), answer, user("Which file did you read?")));
+    await settle();
+    const nextRun = runRequests(second).at(-1)!;
+    expect(userText(nextRun)).toBe("Which file did you read?");
+    expect(nextRun.conversationId).toBe(retried.conversationId);
+    expect(nextRun.conversationState?.readPaths, "with the checkpoint the retry left").toContain(
+      CHECKPOINT_MARKER,
+    );
+    const { message } = await finishWithText(second, next);
+    expect(message.stopReason).toBe("stop");
   });
 
   it("fails rather than replays when text was streamed and no checkpoint exists", async () => {
@@ -999,6 +1037,33 @@ describe("native stream contract: tool continuation after the bridge is lost", (
       expect(textOf(message)).toBe("Partial answer and the rest.");
     },
   );
+
+  it("keeps the question and the tool call in view when checkpoint recovery is rate-limited", async () => {
+    const { bridge, toolUse } = await pauseOnReadTool();
+    bridge.send(cursor.checkpoint());
+    bridge.failStream("invalid_argument", "request rejected");
+    await settle();
+    const resumed = streamReadResult(toolUse);
+    const recovery = await spawned(1);
+    const recovered = onlyRunRequest(recovery);
+    expect(recovered.conversationState?.readPaths).toContain(CHECKPOINT_MARKER);
+    recovery.failStream("resource_exhausted", "rate limit exceeded");
+
+    const third = await spawned(2);
+    const retried = onlyRunRequest(third);
+    expect(retried.conversationId).not.toBe(recovered.conversationId);
+    expect(retried.conversationState?.readPaths).not.toContain(CHECKPOINT_MARKER);
+    expect(userText(retried), "the tool output still reaches Cursor").toContain(README);
+    expect(modelConversation(third, retried).slice(-3)).toEqual([
+      { role: "user", text: expect.stringContaining(PROMPT) },
+      { role: "assistant", text: expect.stringContaining("mcp_pi_read") },
+      { role: "user", text: expect.stringContaining(README) },
+    ]);
+
+    const { message } = await finishWithText(third, resumed);
+    expect(message.stopReason).toBe("stop");
+    expect(textOf(message)).toBe("README describes the Pi provider.");
+  });
 
   it("recovers a later lost tool call from Cursor's checkpoint after a checkpoint recovery", async () => {
     const { bridge, toolUse } = await pauseOnReadTool();
