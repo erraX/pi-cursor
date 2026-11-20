@@ -11,8 +11,8 @@ const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.
 
 describe("Pi extension entry", () => {
   it("is the entry Pi loads, and ships in the npm package", () => {
-    expect(manifest.pi.extensions).toEqual(["./extension.js"]);
-    expect(manifest.files).toContain("extension.js");
+    expect(manifest.pi.extensions).toEqual(["./extension.ts"]);
+    expect(manifest.files).toContain("extension.ts");
   });
 
   it("loads the bundled build when there is one", () => {
@@ -21,6 +21,7 @@ describe("Pi extension entry", () => {
 
   it("loads the TypeScript source when there is no build", () => {
     // A `pi install git:` checkout: Pi installs without dev dependencies, so nothing builds it.
-    expect(extensionEntry(() => false)).toBe("./src/index.ts");
+    // Pi's jiti resolves the `.js` specifier to `src/index.ts`, as it does for the source's imports.
+    expect(extensionEntry(() => false)).toBe("./src/index.js");
   });
 });
