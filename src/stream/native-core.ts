@@ -80,6 +80,7 @@ import {
   isTrivialConversationalTurn,
   normalizeToolResultForTransport,
   summarizeRequestSize,
+  type BuildCursorRequestOptions,
 } from "./request-build.js";
 export {
   buildCursorRequest,
@@ -1858,6 +1859,25 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
   let blobStore = input.blobStore;
   let completedTurns = input.completedTurns;
   let currentTurn = input.currentTurn;
+  // The Cursor conversation the request in flight names. A rate limit rotates the stored id.
+  let conversationId = input.conversationId;
+  // What the request in flight was built from, without its checkpoint, so that it can be rebuilt
+  // for a rotated conversation. Unset when the caller did not say how the request was built.
+  let replayOptions: BuildCursorRequestOptions | undefined =
+    typeof input.systemPrompt === "string" && conversationId
+      ? {
+          modelId: input.modelId,
+          systemPrompt: input.systemPrompt,
+          userText: input.currentTurn.userText,
+          userImages: input.currentTurn.userImages,
+          turns: input.requestTurns ?? input.completedTurns,
+          conversationId,
+          checkpoint: null,
+          maxMode: input.maxMode ?? false,
+          cursorModelParameters: input.cursorModelParameters ?? [],
+          mcpTools: input.mcpTools,
+        }
+      : undefined;
 
   const controller: StreamIdleRetryController = {
     localToolRejections: input.localToolRejections ?? 0,
@@ -1892,7 +1912,7 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
         context.latestCheckpoint &&
         (isPromptHistoryEnabled() || nextAttempt > 1) &&
         typeof input.systemPrompt === "string" &&
-        input.conversationId
+        conversationId
       ) {
         try {
           // The checkpoint restores Cursor's state, not the prompt: the prompt is rebuilt from
@@ -1900,21 +1920,30 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
           // Its images ride the continuation's own user message: rendered from `turns`, they
           // would only become a note that they are not replayed.
           const { userImages, ...interruptedTurn } = context.currentTurn;
-          const payload = buildCursorRequest({
+          const continuation: BuildCursorRequestOptions = {
             modelId: input.modelId,
             systemPrompt: input.systemPrompt,
             userText: CHECKPOINT_CONTINUATION_PROMPT,
             userImages,
             turns: [...(input.requestTurns ?? context.completedTurns), interruptedTurn],
-            conversationId: input.conversationId,
+            conversationId,
             checkpoint: context.latestCheckpoint,
-            existingBlobStore: context.blobStore,
             maxMode: input.maxMode ?? false,
             cursorModelParameters: input.cursorModelParameters ?? [],
             mcpTools: input.mcpTools,
+          };
+          const payload = buildCursorRequest({
+            ...continuation,
+            existingBlobStore: context.blobStore,
           });
           requestBytes = payload.requestBytes;
           blobStore = payload.blobStore;
+          // Without its checkpoint a continuation still reads as one, because the prompt carries
+          // the interrupted turn. With prompt history off it would carry nothing, so that mode
+          // keeps resending the request as built.
+          replayOptions = isPromptHistoryEnabled()
+            ? { ...continuation, checkpoint: null }
+            : undefined;
           completedTurns = context.completedTurns;
           // The continuation extends Pi's turn instead of starting one, so a later loss and the
           // final checkpoint commit see all of it. Fingerprints are cached per turn object and the
@@ -1950,6 +1979,42 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
       } else if (nextAttempt > 1 && context.emittedUserVisibleContent) {
         // No checkpoint and partial output: cannot safely restart.
         return false;
+      }
+
+      // A rate limit rotates the stored conversation id, because Cursor can pin the rejection to
+      // one conversation. The request bytes still name the old id, so without a rebuild the retry
+      // went back to the very conversation Cursor was refusing. The rotation drops the checkpoint
+      // with it, so this only ever rebuilds a request that carries none.
+      const storedConversationId = conversationStates.get(input.convKey)?.conversationId;
+      if (
+        !context.latestCheckpoint &&
+        replayOptions &&
+        storedConversationId &&
+        storedConversationId !== conversationId
+      ) {
+        try {
+          const payload = buildCursorRequest({
+            ...replayOptions,
+            conversationId: storedConversationId,
+            existingBlobStore: context.blobStore,
+          });
+          requestBytes = payload.requestBytes;
+          blobStore = payload.blobStore;
+          replayOptions = { ...replayOptions, conversationId: storedConversationId };
+          conversationId = storedConversationId;
+          debugLog("native.stream.retry_on_rotated_conversation", {
+            requestId: input.requestId,
+            convKey: input.convKey,
+            conversationId,
+            attempt: nextAttempt,
+          });
+        } catch (error) {
+          // Keep the request as built: a retry on the old conversation beats no retry.
+          debugLog("native.stream.retry_on_rotated_conversation_failed", {
+            requestId: input.requestId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
       const launch = (accessToken: string) => {
