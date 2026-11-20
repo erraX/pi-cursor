@@ -4,10 +4,62 @@ import { create } from "@bufbuild/protobuf";
 import { McpToolDefinitionSchema, type McpToolDefinition } from "../proto/agent_pb.js";
 import { cursorMcpToolName, cursorMcpToolNames } from "./root-prompt.js";
 
-export const MAX_LOCAL_TOOL_REJECTIONS = 8;
-export const LOCAL_TOOL_LOOP_ERROR =
-  `Cursor repeatedly requested disabled local tools (${MAX_LOCAL_TOOL_REJECTIONS} requests without a Pi tool result). ` +
-  "Local operations must use the registered Pi MCP tools. Stopped to avoid an endless retry loop.";
+/**
+ * How often the model may come back to a disabled native tool before the run is stopped.
+ *
+ * The unit is a model step, not a call. A model that issues twelve native calls in parallel has
+ * not ignored twelve rejections: Cursor executes each call as it streams in, so all twelve are
+ * rejected before the model reads the first reply. Counting calls stopped such a turn with
+ * nothing executed. Cursor checkpoints the conversation once a step's tool results are in, and
+ * that checkpoint is what separates one step's rejections from the next (see
+ * `closeLocalToolRejectionStep`).
+ */
+export const MAX_LOCAL_TOOL_REJECTION_STEPS = 8;
+/**
+ * Hard ceiling on rejected calls, whatever the step count. It keeps the loop finite if Cursor
+ * ever stops sending the checkpoint the step count relies on.
+ */
+export const MAX_LOCAL_TOOL_REJECTIONS = 64;
+
+/** The rejection counters, as carried by a stream's state and across its transport retries. */
+export interface LocalToolRejectionBudget {
+  /** Rejected native calls since the last Pi result. */
+  localToolRejections?: number;
+  /** Model steps with at least one rejected native call since the last Pi result. */
+  localToolRejectionSteps?: number;
+  /** True while further rejections belong to the step already counted. */
+  localToolRejectionStepOpen?: boolean;
+}
+
+/** Counts one rejected native call, and its model step if this is the step's first rejection. */
+export function recordLocalToolRejection(budget: LocalToolRejectionBudget): void {
+  budget.localToolRejections = (budget.localToolRejections ?? 0) + 1;
+  if (budget.localToolRejectionStepOpen) return;
+  budget.localToolRejectionSteps = (budget.localToolRejectionSteps ?? 0) + 1;
+  budget.localToolRejectionStepOpen = true;
+}
+
+/** Call on a conversation checkpoint: the model has now been shown the step's rejections. */
+export function closeLocalToolRejectionStep(budget: LocalToolRejectionBudget): void {
+  budget.localToolRejectionStepOpen = false;
+}
+
+export function localToolLoopExhausted(budget: LocalToolRejectionBudget): boolean {
+  return (
+    (budget.localToolRejectionSteps ?? 0) >= MAX_LOCAL_TOOL_REJECTION_STEPS ||
+    (budget.localToolRejections ?? 0) >= MAX_LOCAL_TOOL_REJECTIONS
+  );
+}
+
+export function localToolLoopError(budget: LocalToolRejectionBudget): string {
+  const requests = budget.localToolRejections ?? 0;
+  const steps = budget.localToolRejectionSteps ?? 0;
+  return (
+    `Cursor repeatedly requested disabled local tools (${requests} requests over ${steps} model ` +
+    `${steps === 1 ? "step" : "steps"} without a Pi tool result). ` +
+    "Local operations must use the registered Pi MCP tools. Stopped to avoid an endless retry loop."
+  );
+}
 
 const LOCAL_TOOL_HINTS: Record<string, string[]> = {
   readArgs: ["read", "Read", "bash"],
