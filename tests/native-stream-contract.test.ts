@@ -891,16 +891,35 @@ describe("native stream contract: tool continuation after the bridge is lost", (
     });
   });
 
-  it("drops a checkpoint that preceded a mid-pause GOAWAY and rebuilds on a new conversation", async () => {
+  it.each([
+    ["GOAWAYs", (bridge: FakeBridge) => bridge.goaway()],
+    ["resets the connection", (bridge: FakeBridge) => bridge.resetConnection()],
+  ])(
+    "resumes from the checkpoint that preceded the loss when the parked bridge %s",
+    async (_label, lose) => {
+      const { bridge, toolUse } = await pauseOnReadTool();
+      bridge.send(cursor.checkpoint());
+      lose(bridge);
+      await settle();
+      expect(bridges, "a parked stream is not restarted").toHaveLength(1);
+      expect(tokenRequests, "and no retry asks for a fresh token").toEqual([undefined]);
+
+      await expectRecoveredOnNewBridge(streamReadResult(toolUse), {
+        checkpoint: true,
+        sameConversation: true,
+      });
+    },
+  );
+
+  it("rebuilds the in-flight turn when the parked bridge resets before any checkpoint", async () => {
     const { bridge, toolUse } = await pauseOnReadTool();
-    bridge.send(cursor.checkpoint());
-    bridge.goaway();
+    bridge.resetConnection();
     await settle();
     expect(bridges).toHaveLength(1);
 
     await expectRecoveredOnNewBridge(streamReadResult(toolUse), {
       checkpoint: false,
-      sameConversation: false,
+      sameConversation: true,
     });
   });
 

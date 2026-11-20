@@ -1269,7 +1269,12 @@ function writeNativeStream(
           endFailure.kind === TransportFailureKind.RateLimit
             ? Math.min(1, idleRetry?.maxRetries ?? 0)
             : (idleRetry?.maxRetries ?? 0);
+        // A stream parked on a Pi tool call has nothing to restart: its response is closed, and
+        // the turn continues on a new bridge once Pi's results arrive. A restart at this point
+        // only re-committed the pause's checkpoint as a finished turn, which made that
+        // continuation discard it as stale. The pause is saved below instead.
         const recoverable =
+          !mcpExecReceived &&
           endFailure.retryable &&
           !!idleRetry &&
           idleRetry.currentAttempt <= maxRetriesForFailure &&
@@ -1399,7 +1404,10 @@ function writeNativeStream(
         // Cursor's own end-stream error names the failure far better than the exit code does.
         ...(retriableEndError ? { endErrorMessage: retriableEndError } : {}),
       });
+      // Same rule as the end-stream frame: a parked stream is saved for tool recovery, never
+      // restarted. A connection that drops without an end-stream frame arrives here directly.
       const allowRestart =
+        !mcpExecReceived &&
         failure.retryable &&
         canRecoverAfterTransportLoss({
           emittedUserVisibleContent,
