@@ -13,6 +13,7 @@ import {
   SetBlobArgsSchema,
   ToolCallStartedUpdateSchema,
   type ExecClientControlMessage,
+  type ExecClientStreamClose,
   type ExecClientThrow,
 } from "../src/proto/agent_pb.js";
 import { processServerMessage } from "../src/stream/server-messages.js";
@@ -113,12 +114,16 @@ describe("idle progress classification", () => {
 
     expect(progress).toBe("none");
     expect(parked).toHaveLength(1);
-    expect(frames).toHaveLength(1);
-    const answer = fromBinary(AgentClientMessageSchema, frames[0]!.subarray(5));
-    expect(answer.message.case).toBe("execClientControlMessage");
-    const control = answer.message.value as ExecClientControlMessage;
-    expect(control.message.case).toBe("throw");
-    expect((control.message.value as ExecClientThrow).id).toBe(7);
+    expect(frames).toHaveLength(2);
+    const [thrown, closed] = frames.map((frame) => {
+      const answer = fromBinary(AgentClientMessageSchema, frame.subarray(5));
+      expect(answer.message.case).toBe("execClientControlMessage");
+      return answer.message.value as ExecClientControlMessage;
+    });
+    expect(thrown!.message.case).toBe("throw");
+    expect((thrown!.message.value as ExecClientThrow).id).toBe(7);
+    expect(closed!.message.case).toBe("streamClose");
+    expect((closed!.message.value as ExecClientStreamClose).id).toBe(7);
   });
 
   it("evicts the oldest active blob instead of failing the write at the entry bound", () => {

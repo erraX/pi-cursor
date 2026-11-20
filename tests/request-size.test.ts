@@ -5,6 +5,7 @@ import {
   ExecServerMessageSchema,
   McpToolDefinitionSchema,
   type ExecClientControlMessage,
+  type ExecClientStreamClose,
   type ExecClientThrow,
 } from "../src/proto/agent_pb.js";
 import {
@@ -180,13 +181,18 @@ describe("native Cursor exec steering", () => {
     );
     // Unhandled: no result was fabricated for a case whose semantics are unknown.
     expect(handled).toBe(false);
-    // Answered anyway: ExecClientThrow is keyed by exec id, so Cursor stops waiting.
-    expect(frames).toHaveLength(1);
-    const answer = fromBinary(AgentClientMessageSchema, frames[0]!.subarray(5));
-    expect(answer.message.case).toBe("execClientControlMessage");
-    const control = answer.message.value as ExecClientControlMessage;
-    expect(control.message.case).toBe("throw");
-    expect((control.message.value as ExecClientThrow).id).toBe(12);
+    // Answered anyway: ExecClientThrow is keyed by exec id, so Cursor stops waiting. Then the
+    // exec's stream is closed, as Cursor's own executor does for a frame no handler claims.
+    expect(frames).toHaveLength(2);
+    const [thrown, closed] = frames.map((frame) => {
+      const answer = fromBinary(AgentClientMessageSchema, frame.subarray(5));
+      expect(answer.message.case).toBe("execClientControlMessage");
+      return answer.message.value as ExecClientControlMessage;
+    });
+    expect(thrown!.message.case).toBe("throw");
+    expect((thrown!.message.value as ExecClientThrow).id).toBe(12);
+    expect(closed!.message.case).toBe("streamClose");
+    expect((closed!.message.value as ExecClientStreamClose).id).toBe(12);
   });
 
   it("handles grind execution, reflection, VM setup, and truncated tool call execs with success results", () => {
